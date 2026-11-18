@@ -29,6 +29,7 @@ export function lintModel(model, root, wanted) {
     if (s.privileged) problems.push(`${name}: privileged containers are not allowed`);
     for (const key of ['network_mode', 'pid', 'ipc']) if (s[key] === 'host') problems.push(`${name}: ${key}: host breaks isolation`);
     for (const p of s.ports ?? []) if (p.published) problems.push(`${name}: published host port ${p.published} (use the Compose network during the gate)`);
+    if (s.healthcheck?.disable) problems.push(`${name}: the healthcheck is disabled`);
     for (const v of s.volumes ?? []) {
       if (v.type !== 'bind') continue;
       if (String(v.source).includes('docker.sock')) problems.push(`${name}: the Docker socket must not be mounted`);
@@ -38,9 +39,10 @@ export function lintModel(model, root, wanted) {
   for (const kind of ['networks', 'volumes']) {
     for (const [name, def] of Object.entries(model[kind] ?? {})) {
       if (def?.external) problems.push(`${kind}.${name}: external ${kind} are shared with other projects`);
+      if (def?.driver_opts && Object.keys(def.driver_opts).length > 0) problems.push(`${kind}.${name}: driver options can reach outside the project`);
     }
   }
-  const required = wanted.slice(0, -1).filter((n) => services[n] && !services[n].healthcheck);
+  const required = wanted.slice(0, -1).filter((n) => services[n] && (!services[n].healthcheck || services[n].healthcheck.disable));
   for (const n of required) problems.push(`${n}: add a healthcheck so the gate can wait for readiness`);
   return problems;
 }
@@ -61,15 +63,18 @@ function foreignContainers(project) {
  * test service against the live services, keep bounded logs and remove
  * everything this run created. Returns one check per phase.
  */
-export function runCompose({ root, compose, runDir, id }) {
+export function runCompose({ root, compose, runDir, id, budget = (s) => s }) {
   const checks = [];
   const docker = dockerAvailable();
   if (!docker.ok) return [check('compose:e2e', 'NOT_RUN', `${docker.reason}; the stack was not tested`)];
 
   const project = `harness-${id.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-  const timeout = compose.timeout_seconds ?? 600;
+  // `timeout_seconds` is the budget for build, health and the test together.
+  const until = Date.now() + (compose.timeout_seconds ?? 600) * 1000;
+  const left = () => Math.max(0, budget(Math.floor((until - Date.now()) / 1000)));
+  const outOfTime = (phase) => check(`compose:${phase}`, 'FAIL', 'the gate ran out of time before this phase (raise compose.timeout_seconds or speed up the build)');
   const base = ['compose', '--project-directory', root, ...compose.files.flatMap((f) => ['-f', path.join(root, f)]), '-p', project];
-  const dc = (args, t = timeout) => sh('docker', [...base, ...args], { cwd: root, timeout: t });
+  const dc = (args, t) => sh('docker', [...base, ...args], { cwd: root, timeout: t ?? Math.max(1, left()) });
   const save = (name, r) => {
     const file = path.join(runDir, `${name}.log`);
     fs.writeFileSync(file, bounded(`${r.stdout}\n${r.stderr}`));
@@ -85,17 +90,26 @@ export function runCompose({ root, compose, runDir, id }) {
 
   const before = foreignContainers(project);
   try {
+    if (left() <= 0) return [...checks, outOfTime('build')];
     const build = dc(['build', ...wanted]);
     if (build.code !== 0) {
       checks.push(check('compose:build', 'FAIL', build.timedOut ? 'build timed out' : 'image build failed', { details: [tail(build.stderr, 15)], log: save('compose-build', build) }));
       return checks;
     }
-    const up = dc(['up', '-d', '--wait', '--wait-timeout', String(timeout), ...compose.services], timeout + 30);
+    if (left() <= 5) {
+      checks.push(outOfTime('health'));
+      return checks;
+    }
+    const up = dc(['up', '-d', '--wait', '--wait-timeout', String(left()), ...compose.services], left() + 10);
     if (up.code !== 0) {
       checks.push(check('compose:health', 'FAIL', 'services did not become healthy', { details: [tail(up.stderr, 15)], log: save('compose-up', up) }));
       return checks;
     }
     checks.push(check('compose:health', 'PASS', `${compose.services.join(', ')} healthy`));
+    if (left() <= 0) {
+      checks.push(outOfTime('e2e'));
+      return checks;
+    }
     const run = dc(['run', '--rm', '-T', compose.test_service]);
     const log = save('compose-e2e', run);
     checks.push(run.code === 0

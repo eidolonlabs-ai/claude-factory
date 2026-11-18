@@ -26,7 +26,8 @@ const USAGE = `Claude Harness
   harness guard-test <cases.json>    run guard decision cases
 
 Options: --repo <path> (default: current directory), --json
-Exit codes: 0 pass, 1 gate or validation failure, 2 usage or environment error.`;
+Exit codes: 0 pass, 1 gate or validation failure, 2 usage or environment error,
+3 baseline (the stack passed with no active task: not acceptance evidence).`;
 
 function parse(argv) {
   const opts = { _: [], branch: {} };
@@ -55,7 +56,7 @@ const need = (what) => {
 };
 const gateExit = (result) => {
   print(result, summarize(result));
-  process.exit(result.passed ? 0 : 1);
+  process.exit(result.passed ? 0 : result.status === 'baseline' ? 3 : 1);
 };
 
 try {

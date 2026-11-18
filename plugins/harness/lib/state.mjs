@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, gitOut, fail, readJsonIfExists, writeJsonAtomic, sha256 } from './util.mjs';
+import { git, gitOut, fail, sleep, readJsonIfExists, writeJsonAtomic, sha256 } from './util.mjs';
 
 const EVENT_LIMIT = 512 * 1024;
 
@@ -33,6 +33,18 @@ export function setActive(repo, record) {
   writeJsonAtomic(activePath(repo), record);
 }
 
+/**
+ * Change fields of the active record, re-reading it first. A gate runs for
+ * minutes; if the task was deactivated or replaced meanwhile, nothing is written.
+ */
+export function updateActive(repo, activation, patch) {
+  const current = getActive(repo);
+  if (!current || current.activation !== activation) return null;
+  const next = { ...current, ...patch(current) };
+  setActive(repo, next);
+  return next;
+}
+
 export function clearActive(repo) {
   const file = activePath(repo);
   const record = readJsonIfExists(file);
@@ -49,12 +61,16 @@ export function newRunDir(repo, id) {
   return dir;
 }
 
-export function latestResult(repo, taskId) {
+/**
+ * Latest result for this worktree. With an activation id, only results from
+ * that activation count: an older pass for the same task id is not evidence.
+ */
+export function latestResult(repo, activation) {
   const runs = path.join(repo.state, 'runs');
   if (!fs.existsSync(runs)) return null;
   for (const id of fs.readdirSync(runs).sort().reverse()) {
     const r = readJsonIfExists(path.join(runs, id, 'result.json'));
-    if (r && (!taskId || r.task === taskId) && (!r.worktree || r.worktree === repo.root)) return r;
+    if (r && r.worktree === repo.root && (activation === undefined || r.activation === activation)) return r;
   }
   return null;
 }
@@ -74,24 +90,40 @@ export function logEvent(repo, event) {
   }
 }
 
-/** One gate per repository at a time: Compose builds are heavy and share a daemon. */
-export function withLock(repo, fn) {
-  const lock = path.join(repo.state, 'gate.lock');
-  fs.mkdirSync(repo.state, { recursive: true });
-  const existing = readJsonIfExists(lock);
-  if (existing) {
-    let alive = true;
+/**
+ * One gate per worktree at a time. Worktrees gate concurrently: each run has
+ * its own Compose project. `waitSeconds` lets a hook queue behind a running
+ * gate instead of failing.
+ */
+export function withLock(repo, fn, waitSeconds = 0) {
+  const lock = path.join(repo.state, 'locks', `${repo.key}.lock`);
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  const deadline = Date.now() + waitSeconds * 1000;
+  for (;;) {
     try {
-      process.kill(existing.pid, 0);
-    } catch {
-      alive = false;
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
     }
-    if (alive) fail(`another gate is running (pid ${existing.pid}, since ${existing.at}); wait for it or inspect ${lock}`);
+    let holder = null;
+    try {
+      holder = JSON.parse(fs.readFileSync(lock, 'utf8'));
+      process.kill(holder.pid, 0);
+    } catch {
+      fs.rmSync(lock, { force: true }); // unreadable, or its process is gone
+      continue;
+    }
+    if (Date.now() >= deadline) fail(`another gate is running in this worktree (pid ${holder.pid}, since ${holder.at})`);
+    sleep(1000);
   }
-  writeJsonAtomic(lock, { pid: process.pid, at: new Date().toISOString() });
   try {
     return fn();
   } finally {
-    fs.rmSync(lock, { force: true });
+    try {
+      if (JSON.parse(fs.readFileSync(lock, 'utf8')).pid === process.pid) fs.rmSync(lock, { force: true });
+    } catch {
+      // already gone
+    }
   }
 }

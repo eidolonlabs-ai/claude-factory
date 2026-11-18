@@ -27,4 +27,4 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/harness.mjs" setup
 node "${CLAUDE_PLUGIN_ROOT}/scripts/harness.mjs" verify
 ```
 
-Report exactly which checks ran and which did not. A baseline that cannot pass is the first task.
+With no task active this is a baseline run: it reports `BASELINE` and exits 3 when the stack and its test pass, and it is never acceptance evidence. Report exactly which checks ran and which did not. A baseline that cannot pass is the first task.

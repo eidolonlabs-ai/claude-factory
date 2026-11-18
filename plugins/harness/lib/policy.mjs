@@ -49,9 +49,10 @@ export function coveredBy(patterns, rel) {
   return (patterns ?? []).some((p) => covers(p, rel));
 }
 
+// Identity rules compare case-insensitively: on macOS and Windows `.ENV` is `.env`.
 export function isSecretPath(rel) {
-  const base = path.posix.basename(rel);
-  if (/^\.env(\..*)?$/.test(base) && !ENV_ALLOWED.has(base)) return 'environment file';
+  const base = path.posix.basename(rel).toLowerCase();
+  if (base.startsWith('.env') && !ENV_ALLOWED.has(base)) return 'environment file';
   if (KEY_NAMES.has(base) || KEY_EXTS.has(path.posix.extname(base))) return 'private key';
   return null;
 }
@@ -71,13 +72,14 @@ export function protectedPaths(config) {
  */
 export function classifyWrite(rel, ctx = {}, asDir = false) {
   const dir = `${rel}/`;
-  if (rel === '.git' || rel.startsWith('.git/')) return 'Git internals are off limits';
+  const low = rel.toLowerCase();
+  if (low === '.git' || low.startsWith('.git/')) return 'Git internals are off limits';
   const secret = isSecretPath(rel);
   if (secret) return `${rel} is ${secret === "environment file" ? "an" : "a"} ${secret}`;
   for (const p of ctx.controlPrefixes ?? CONTROL_PREFIXES) {
-    if (dir.startsWith(p)) return `${rel} is in the harness control directory`;
+    if (`${low}/`.startsWith(p.toLowerCase())) return `${rel} is in the harness control directory`;
   }
-  if ((ctx.controlFiles ?? CONTROL_FILES).includes(rel)) return `${rel} is harness configuration; the owner edits it`;
+  if ((ctx.controlFiles ?? CONTROL_FILES).some((f) => f.toLowerCase() === low)) return `${rel} is harness configuration; the owner edits it`;
   if (isHoldout(rel, ctx.holdoutMarkers) || isHoldout(dir, ctx.holdoutMarkers)) return `${rel} is a holdout`;
   const frozen = ctx.frozen ?? [];
   if (frozen.includes(rel)) return `${rel} is frozen`;
@@ -85,6 +87,8 @@ export function classifyWrite(rel, ctx = {}, asDir = false) {
   if (!ctx.task) return null;
   if (coveredBy(ctx.protected, rel)) return `${rel} is a protected acceptance input for task ${ctx.task.id}`;
   if (asDir && (ctx.protected ?? []).some((p) => `${p}/`.startsWith(dir))) return `${rel} contains protected paths`;
+  // Ignored paths (build output, dependencies) are not part of the candidate.
+  if (ctx.isIgnored?.(rel)) return null;
   if (!coveredBy(ctx.task.allowed_paths, rel)) return `${rel} is outside the allowed paths of task ${ctx.task.id}`;
   if (ctx.editable && !coveredBy(ctx.editable, rel)) return `${rel} is outside policy.editable_paths`;
   return null;

@@ -32,8 +32,8 @@ State lives in the Git common directory under `harness/`: outside every working 
 
 | Step | Fails when |
 | --- | --- |
-| `scope` | A changed path is outside the task's allowed paths or `policy.editable_paths`, or a protected path changed (status `blocked`: stop for the owner). |
-| `frozen` | `harness.json` differs from the configuration frozen at activation. The gate always runs the frozen copy. |
+| `scope` | A changed path is outside the task's allowed paths or `policy.editable_paths`. Status `blocked` (stop for the owner) when a protected path changed, or when Git state could hide a change: a protected file whose content differs from the base tree, a skip-worktree or assume-unchanged index flag, a nested repository, or a `.gitignore` that differs from the base. |
+| `frozen` | `harness.json` differs from the configuration frozen at activation, or the activation record no longer matches its digests. The gate always runs the frozen copy. |
 | `hygiene` | A `.env` file or private key is tracked, or `.env` exists and is not ignored. |
 | `verify:<name>` | A configured check exits non-zero. Checks are `argv` arrays run without a shell. |
 | `compose:policy` | The Compose definition breaks an isolation rule. |
@@ -43,9 +43,13 @@ State lives in the Git common directory under `harness/`: outside every working 
 | `diff-audit` | Changed lines contain a high-severity pattern: a private key or cloud credential, dynamic code execution, or SQL built by interpolation. |
 | `candidate` | The candidate changed while the gate ran. |
 
-`NOT_RUN` is never `PASS`. The gate passes only when nothing failed and `compose:e2e` actually ran and passed, so an unreachable Docker daemon fails acceptance. `holdouts` always reports `NOT_RUN` in this version.
+`NOT_RUN` is never `PASS`. The gate passes only when a task is active, nothing failed, and `compose:e2e` actually ran and passed, so an unreachable Docker daemon fails acceptance. `holdouts` always reports `NOT_RUN` in this version.
 
-Each run writes `result.json` and bounded logs to `<git-common-dir>/harness/runs/<run-id>/`. `harness status` says whether the last result still describes the current candidate.
+Without an active task, `harness verify` is a baseline run: scope and frozen inputs cannot be checked, so the best result is status `baseline` with `passed: false` and exit code 3. It shows the stack works and is never acceptance evidence.
+
+`compose.timeout_seconds` is one budget shared by build, health and the test. Teardown has its own time and always runs.
+
+Each run writes `result.json` and bounded logs to `<git-common-dir>/harness/runs/<run-id>/`. `harness status` says whether the last result still describes the current candidate. Results are tied to an activation: a pass from an earlier activation of the same task is not shown as evidence.
 
 ## Review
 
@@ -53,9 +57,9 @@ Each run writes `result.json` and bounded logs to `<git-common-dir>/harness/runs
 
 ## Parallel builders
 
-`/harness:orchestrate` splits a parent task into nodes with disjoint paths. The owner approves the plan once with `harness approve-plan`, which rejects overlapping ownership without a dependency, paths outside the parent's, unknown dependencies, and cycles. Each node runs in a `harness-builder` subagent with its own worktree and activates its own task with `--approved`, which works only for tasks in an approved plan.
+`/harness:orchestrate` splits a parent task into nodes with disjoint paths. The owner approves the plan once with `harness approve-plan`, which rejects overlapping ownership without a dependency, paths outside the parent's, unknown dependencies, and cycles. Approval pins every task's `base_ref` to the commit it resolves to at that moment, so later commits and merges are measured against the approved base. Each node runs in a `harness-builder` subagent with its own worktree and activates its own task with `--approved`. That flag works only for a node of an approved plan, one worktree per node, and never for the parent task.
 
-`harness integrate <parent-id> --branch <node>=<ref> ...` merges the builder branches in dependency order into a new worktree under `.claude/worktrees/`, activates the parent task there, and runs a fresh gate. It never touches the branch you are on, and it keeps the worktree on a conflict.
+`harness integrate <parent-id> --branch <node>=<ref> ...` creates a new worktree under `.claude/worktrees/` at the approved base, activates the parent task there, merges the builder branches in dependency order, and runs a fresh gate. A branch with no commits beyond the base is refused. It never touches the branch you are on, and it keeps the worktree on a conflict.
 
 ## Unattended
 

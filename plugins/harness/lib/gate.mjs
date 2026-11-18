@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sh, git, bounded, tail, digest, runId, now, readJsonIfExists, writeJsonAtomic } from './util.mjs';
 import { coveredBy, isSecretPath, protectedPaths } from './policy.mjs';
-import { candidateHash, changedPaths, symlinkedPaths } from './candidate.mjs';
+import { candidateHash, changedPaths, symlinkedPaths, integrityProblems } from './candidate.mjs';
 import { runCompose } from './compose.mjs';
 import { auditDiff } from './audit.mjs';
 import { configPath, newRunDir, logEvent, withLock } from './state.mjs';
@@ -12,9 +12,10 @@ const check = (id, status, summary, extra = {}) => ({ id, status, summary, ...ex
 function scopeCheck(repo, active, config) {
   if (!active) return check('scope', 'NOT_RUN', 'no active task: scope was not checked');
   const changed = changedPaths(repo.root, active.base);
+  const hidden = integrityProblems(repo.root, active.base, protectedPaths(config));
   const guarded = changed.filter((p) => coveredBy(protectedPaths(config), p));
-  if (guarded.length > 0) {
-    return check('scope', 'FAIL', 'protected paths changed: stop for the owner', { details: guarded, blocked: true });
+  if (guarded.length > 0 || hidden.length > 0) {
+    return check('scope', 'FAIL', 'protected paths or Git state changed: stop for the owner', { details: [...guarded, ...hidden], blocked: true });
   }
   const outside = changed.filter((p) => !coveredBy(active.task.allowed_paths, p) || !coveredBy(config.policy.editable_paths, p));
   const links = symlinkedPaths(repo.root, changed);
@@ -30,6 +31,9 @@ function frozenCheck(repo, active) {
   if (digest(live) !== active.config_sha256) {
     return check('frozen', 'FAIL', 'harness.json differs from the configuration frozen at activation', { blocked: true });
   }
+  if (digest(active.task) !== active.task_sha256 || digest(active.config) !== active.config_sha256) {
+    return check('frozen', 'FAIL', 'the activation record no longer matches its digests', { blocked: true });
+  }
   return check('frozen', 'PASS', 'configuration and task match their activation digests');
 }
 
@@ -43,9 +47,10 @@ function hygieneCheck(repo) {
   return check('hygiene', 'PASS', 'no tracked secrets; .env is absent or ignored');
 }
 
-function hostChecks(repo, config, runDir) {
+function hostChecks(repo, config, runDir, budget) {
   return config.checks.map((c) => {
-    const r = sh(c.argv[0], c.argv.slice(1), { cwd: repo.root, timeout: c.timeout_seconds ?? 600 });
+    if (budget(1) <= 0) return check(`verify:${c.name}`, 'FAIL', 'the gate ran out of time before this check');
+    const r = sh(c.argv[0], c.argv.slice(1), { cwd: repo.root, timeout: budget(c.timeout_seconds ?? 600) });
     const log = path.join(runDir, `check-${c.name.replace(/[^A-Za-z0-9_.-]/g, '_')}.log`);
     fs.writeFileSync(log, bounded(`${r.stdout}\n${r.stderr}`));
     if (r.missing) return check(`verify:${c.name}`, 'NOT_RUN', `${c.argv[0]} was not found`, { log });
@@ -67,11 +72,16 @@ function auditCheck(repo, base) {
  * NOT_RUN, and NOT_RUN is never PASS: acceptance needs the stack test to have
  * actually run and passed.
  *
- * @param {{repo: object, config: object, active?: object|null, role?: string, attempts?: number}} opts
+ * @param {{repo: object, config: object, active?: object|null, role?: string, attempts?: number, deadlineSeconds?: number, lockWaitSeconds?: number}} opts
  *   `config` must be the configuration frozen at activation when a task is active.
+ *   `deadlineSeconds` bounds everything except teardown, so a hook with a
+ *   timeout is never killed with a stack still running.
  */
-export function runGate({ repo, config, active = null, role = 'build', attempts = 0 }) {
+export function runGate({ repo, config, active = null, role = 'build', attempts = 0, deadlineSeconds = Infinity, lockWaitSeconds = 0 }) {
   return withLock(repo, () => {
+    const deadline = Date.now() + deadlineSeconds * 1000;
+    // Seconds a step may use: its own limit, capped by what is left overall.
+    const budget = (seconds) => Math.floor(Math.min(seconds, (deadline - Date.now()) / 1000));
     const id = runId();
     const runDir = newRunDir(repo, id);
     const started = now();
@@ -92,9 +102,9 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
     step(['frozen'], () => frozenCheck(repo, active));
     step(['hygiene'], () => hygieneCheck(repo));
     step(['compose:e2e'], () => {
-      const host = hostChecks(repo, config, runDir);
+      const host = hostChecks(repo, config, runDir, budget);
       if (host.some((c) => c.status === 'FAIL')) return [...host, check('compose:e2e', 'NOT_RUN', 'not reached: a configured check failed')];
-      return [...host, ...runCompose({ root: repo.root, compose: config.compose, runDir, id })];
+      return [...host, ...runCompose({ root: repo.root, compose: config.compose, runDir, id, budget })];
     });
     step(['holdouts'], () => check('holdouts', 'NOT_RUN', 'no holdouts configured (they need a separate verifier identity)'));
     step(['diff-audit'], () => auditCheck(repo, active?.base));
@@ -106,17 +116,22 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
     const failed = checks.filter((c) => c.status === 'FAIL');
     const e2e = checks.find((c) => c.id === 'compose:e2e');
     const unrun = checks.filter((c) => c.id.startsWith('verify:') && c.status === 'NOT_RUN');
-    const passed = failed.length === 0 && e2e?.status === 'PASS' && unrun.length === 0;
+    const ran = failed.length === 0 && e2e?.status === 'PASS' && unrun.length === 0;
+    // Without a task nothing checks scope or frozen inputs: such a run can show
+    // that the stack works, and can never be acceptance evidence.
+    const passed = ran && Boolean(active);
     const blocked = failed.some((c) => c.blocked);
+    const head = git(repo.root, 'rev-parse', '--verify', '-q', 'HEAD');
     const result = {
       schema_version: 1,
       run_id: id,
       project: path.basename(repo.root),
       milestone: 'M1',
       task: active?.task.id ?? null,
+      activation: active?.activation ?? null,
       role,
       engine: 'claude-code',
-      status: passed ? 'passed' : blocked ? 'blocked' : 'failed',
+      status: passed ? 'passed' : ran ? 'baseline' : blocked ? 'blocked' : 'failed',
       passed,
       merged: false,
       attempts,
@@ -124,7 +139,7 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
       environmental: failed.length > 0 && failed.every((c) => c.environmental),
       candidate_sha256: after,
       base: active?.base ?? null,
-      head_sha: git(repo.root, 'rev-parse', 'HEAD').stdout.trim() || null,
+      head_sha: head.code === 0 ? head.stdout.trim() : null,
       worktree: repo.root,
       evidence: runDir,
       started,
@@ -134,7 +149,7 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
     writeJsonAtomic(path.join(runDir, 'result.json'), result);
     logEvent(repo, { event: 'gate', run_id: id, task: result.task, status: result.status });
     return result;
-  });
+  }, lockWaitSeconds);
 }
 
 /** Short, log-free summary for a terminal or a hook reason. */
@@ -147,7 +162,9 @@ export function summarize(result) {
       if (c.log) lines.push(`            log: ${c.log}`);
     }
   }
-  if (!result.passed && result.status !== 'blocked' && !result.checks.some((c) => c.status === 'FAIL')) {
+  if (result.status === 'baseline') {
+    lines.push('  Baseline only: no task is active, so scope and frozen inputs were not checked. This is not acceptance evidence.');
+  } else if (!result.passed && result.status !== 'blocked' && !result.checks.some((c) => c.status === 'FAIL')) {
     lines.push('  Required checks did not run. NOT_RUN is never PASS.');
   }
   lines.push(`Candidate ${result.candidate_sha256.slice(0, 12)} · evidence ${result.evidence}`);

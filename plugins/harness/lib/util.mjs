@@ -33,8 +33,17 @@ export function sh(cmd, args = [], opts = {}) {
   };
 }
 
+// Replacement refs can make Git report a different
+// history than the one on disk; the harness always reads the real one.
+const GIT_ENV = { GIT_NO_REPLACE_OBJECTS: '1', GIT_OPTIONAL_LOCKS: '0' };
+
 export function git(cwd, ...args) {
-  return sh('git', args, { cwd });
+  return sh('git', ['-c', 'core.quotepath=off', ...args], { cwd, env: { ...process.env, ...GIT_ENV } });
+}
+
+/** Block the thread briefly; hooks and the CLI are short-lived synchronous processes. */
+export function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export function gitOut(cwd, ...args) {

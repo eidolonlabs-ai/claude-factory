@@ -3,37 +3,61 @@ import path from 'node:path';
 import { sh, git, gitOut, fail, digest, now, readJson, readJsonIfExists, writeJsonAtomic, bounded, tail } from './util.mjs';
 import { coveredBy, covers, protectedPaths } from './policy.mjs';
 import { loadConfig, validateTaskInRepo, validateTask } from './config.mjs';
-import { changedPaths, candidateHash } from './candidate.mjs';
-import { repoInfo, requireRepo, getActive, setActive, clearActive, latestResult, logEvent } from './state.mjs';
+import { changedPaths, candidateHash, integrityProblems } from './candidate.mjs';
+import { repoInfo, requireRepo, getActive, setActive, updateActive, clearActive, latestResult, logEvent } from './state.mjs';
 import { runGate, summarize } from './gate.mjs';
 
 const planPath = (repo, id) => path.join(repo.state, 'plans', `${id}.json`);
 
-function approvedDigests(repo) {
+/** The approved plan that contains this exact task, if any. */
+function planFor(repo, taskDigest) {
   const dir = path.join(repo.state, 'plans');
-  if (!fs.existsSync(dir)) return new Set();
-  return new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.json')).flatMap((f) => readJson(path.join(dir, f)).approved ?? []));
+  if (!fs.existsSync(dir)) return null;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json'))) {
+    const plan = readJson(path.join(dir, f));
+    if ((plan.approved ?? []).includes(taskDigest)) return plan;
+  }
+  return null;
+}
+
+/**
+ * A plan approval covers one builder per node. The parent task is activated
+ * only by `integrate`; a node claimed by one worktree cannot be taken by another.
+ */
+function claimApproved(repo, task, integration) {
+  const d = digest(task);
+  const plan = planFor(repo, d) ?? fail('--approved needs a task the owner approved through approve-plan; this task digest is not on record');
+  const isParent = digest(plan.task) === d;
+  if (isParent !== Boolean(integration)) {
+    fail(isParent ? 'the parent task of a plan is activated by `harness integrate`, in its integration worktree' : 'integration activates the plan\'s parent task only');
+  }
+  if (isParent) return;
+  const claims = plan.claims ?? {};
+  if (claims[d] && claims[d] !== repo.root && fs.existsSync(claims[d])) fail(`task ${task.id} is already claimed by the builder in ${claims[d]}`);
+  writeJsonAtomic(planPath(repo, plan.task.id), { ...plan, claims: { ...claims, [d]: repo.root } });
 }
 
 /**
  * Freeze an approved task, its resolved base and the current configuration
  * for this worktree. From here the guard enforces scope and Stop runs the gate.
  */
-export function activate(cwd, taskFile, { approved = false, controller = false } = {}) {
+export function activate(cwd, taskFile, { approved = false, controller = false, integration = false } = {}) {
   const repo = requireRepo(cwd);
   const config = loadConfig(repo);
   const task = readJson(path.resolve(cwd, taskFile));
   const { errors, base } = validateTaskInRepo(task, config, repo);
   if (errors.length > 0) fail(`task is not ready:\n  - ${errors.join('\n  - ')}`);
-  if (approved && !approvedDigests(repo).has(digest(task))) {
-    fail('--approved needs a task the owner approved through approve-plan; this task digest is not on record');
-  }
   const current = getActive(repo);
   if (current) fail(`task ${current.task.id} is already active in this worktree; deactivate it first`);
-  const dirty = changedPaths(repo.root, base).filter((p) => coveredBy(protectedPaths(config), p));
+  const dirty = [
+    ...changedPaths(repo.root, base).filter((p) => coveredBy(protectedPaths(config), p)),
+    ...integrityProblems(repo.root, base, protectedPaths(config)),
+  ];
   if (dirty.length > 0) fail(`protected paths already differ from the base; commit or revert them first:\n  - ${dirty.join('\n  - ')}`);
+  if (approved) claimApproved(repo, task, integration);
   const record = {
     schema_version: 1,
+    activation: `${digest(task).slice(0, 12)}-${Date.now().toString(36)}`,
     task,
     task_sha256: digest(task),
     config,
@@ -64,14 +88,20 @@ export function verify(cwd, { role = 'build' } = {}) {
   const active = getActive(repo);
   const config = active ? active.config : loadConfig(repo);
   const result = runGate({ repo, config, active, role, attempts: active?.attempts ?? 0 });
-  if (active) setActive(repo, { ...active, last: { run_id: result.run_id, candidate: result.candidate_sha256, passed: result.passed, status: result.status } });
+  if (active) {
+    updateActive(repo, active.activation, (cur) => ({
+      attempts: result.passed ? 0 : cur.attempts, // an explicit pass clears a spent Stop budget
+      environmental: result.passed ? 0 : cur.environmental,
+      last: { run_id: result.run_id, candidate: result.candidate_sha256, passed: result.passed, status: result.status },
+    }));
+  }
   return result;
 }
 
 export function status(cwd) {
   const repo = requireRepo(cwd);
   const active = getActive(repo);
-  const last = latestResult(repo, active?.task.id);
+  const last = latestResult(repo, active?.activation);
   const candidate = candidateHash(repo.root);
   return {
     worktree: repo.root,
@@ -95,10 +125,10 @@ export function status(cwd) {
 export function reviewPacket(cwd) {
   const repo = requireRepo(cwd);
   const active = getActive(repo) ?? fail('no task is active in this worktree: activate the approved task before review');
-  const last = latestResult(repo, active.task.id);
+  const last = latestResult(repo, active.activation);
   const candidate = candidateHash(repo.root);
   const changed = changedPaths(repo.root, active.base);
-  const diff = git(repo.root, 'diff', '--no-color', active.base, '--').stdout;
+  const diff = git(repo.root, 'diff', '--no-color', '--no-ext-diff', active.base, '--').stdout;
   const untracked = git(repo.root, 'ls-files', '-o', '--exclude-standard').stdout.split('\n').filter((p) => p && !p.startsWith('.claude/worktrees/'));
   const lines = [
     '# Review packet',
@@ -177,11 +207,18 @@ export function approvePlan(cwd, planFile) {
   const plan = readJson(path.resolve(cwd, planFile));
   const errors = validatePlan(plan, config, repo);
   if (errors.length > 0) fail(`plan is not ready:\n  - ${errors.join('\n  - ')}`);
-  const record = { ...plan, approved_at: now(), approved: [plan.task, ...plan.nodes.map((n) => n.task)].map(digest) };
+  // Pin the base now. A symbolic ref such as HEAD would resolve differently
+  // after builders commit or branches merge, and scope would be measured
+  // against the wrong commit.
+  const base = gitOut(repo.root, 'rev-parse', '--verify', `${plan.task.base_ref}^{commit}`);
+  const pin = (t) => ({ ...t, base_ref: base });
+  const pinned = { ...plan, task: pin(plan.task), nodes: plan.nodes.map((n) => ({ ...n, task: pin(n.task) })) };
+  const tasks = [pinned.task, ...pinned.nodes.map((n) => n.task)];
+  const record = { ...pinned, approved_at: now(), approved: tasks.map(digest), claims: {} };
   writeJsonAtomic(planPath(repo, plan.task.id), record);
   const dir = path.join(repo.state, 'plans', plan.task.id);
   fs.mkdirSync(dir, { recursive: true });
-  for (const t of [plan.task, ...plan.nodes.map((n) => n.task)]) writeJsonAtomic(path.join(dir, `${t.id}.json`), t);
+  for (const t of tasks) writeJsonAtomic(path.join(dir, `${t.id}.json`), t);
   logEvent(repo, { event: 'approve-plan', task: plan.task.id, nodes: plan.nodes.length });
   return { plan: record, tasks: dir };
 }
@@ -208,11 +245,18 @@ export function integrate(cwd, planId, branches) {
   const order = topological(plan);
   const missing = order.filter((id) => !branches[id]);
   if (missing.length > 0) fail(`no branch given for: ${missing.join(', ')} (pass --branch <task-id>=<ref>)`);
-  const base = gitOut(repo.root, 'rev-parse', `${plan.task.base_ref}^{commit}`);
+  const base = gitOut(repo.root, 'rev-parse', '--verify', `${plan.task.base_ref}^{commit}`);
+  for (const id of order) {
+    const ahead = git(repo.root, 'rev-list', '--count', `${base}..${branches[id]}`);
+    if (ahead.code !== 0) fail(`branch ${branches[id]} for ${id} does not exist`);
+    if (ahead.stdout.trim() === '0') fail(`branch ${branches[id]} for ${id} has no commits beyond the base: that builder delivered nothing`);
+  }
   const stamp = Date.now().toString(36);
   const branch = `harness/integration/${planId}-${stamp}`;
   const tree = path.join(repo.root, '.claude', 'worktrees', `harness-integration-${planId}-${stamp}`);
   gitOut(repo.root, 'worktree', 'add', '-b', branch, tree, base);
+  // Freeze the task and configuration from the clean base, before any builder's code arrives.
+  activate(tree, path.join(repo.state, 'plans', planId, `${planId}.json`), { approved: true, integration: true });
   for (const id of order) {
     const m = git(tree, 'merge', '--no-ff', '--no-edit', '-m', `harness: integrate ${id}`, branches[id]);
     if (m.code !== 0) {
@@ -220,8 +264,6 @@ export function integrate(cwd, planId, branches) {
       fail(`merging ${id} (${branches[id]}) conflicted; resolve it with the owner. Integration worktree retained at ${tree}\n${tail(m.stdout + m.stderr, 10)}`);
     }
   }
-  const planTask = path.join(repo.state, 'plans', planId, `${planId}.json`);
-  activate(tree, planTask, { approved: true });
   const result = verify(tree);
   return { worktree: tree, branch, result };
 }
@@ -242,9 +284,9 @@ export function managedRun(cwd, taskFile) {
   gitOut(repo.root, 'worktree', 'add', '-b', branch, tree, base);
   const frozen = path.join(repo.state, 'managed', `${task.id}-${stamp}.json`);
   writeJsonAtomic(frozen, task);
-  activate(tree, frozen, { controller: true });
+  const record = activate(tree, frozen, { controller: true });
   const wt = repoInfo(tree);
-  const limit = config.limits?.attempts ?? 3;
+  const limit = record.config.limits?.attempts ?? 3;
   const bin = process.env.CLAUDE_HARNESS_CLAUDE_BIN ?? 'claude';
   const extra = (process.env.CLAUDE_HARNESS_CLAUDE_ARGS ?? '--permission-mode acceptEdits').split(/\s+/).filter(Boolean);
   let feedback = '';
@@ -260,7 +302,7 @@ export function managedRun(cwd, taskFile) {
       feedback && `\nThe previous attempt failed the gate. Fix the cause, not the checks:\n${feedback}`,
     ].filter(Boolean).join('\n');
     const r = sh(bin, ['-p', '--output-format', 'json', ...extra], {
-      cwd: tree, input: prompt, timeout: config.limits?.agent_seconds ?? 1200,
+      cwd: tree, input: prompt, timeout: record.config.limits?.agent_seconds ?? 1200,
       env: { ...process.env, CLAUDE_HARNESS_MANAGED: '1' },
     });
     fs.mkdirSync(path.join(wt.state, 'managed'), { recursive: true });
@@ -271,8 +313,7 @@ export function managedRun(cwd, taskFile) {
     } catch {
       // non-JSON output is kept in the attempt log
     }
-    const active = getActive(wt);
-    setActive(wt, { ...active, attempts: attempt });
+    if (!updateActive(wt, record.activation, () => ({ attempts: attempt }))) fail(`the task was deactivated during the run; worktree retained at ${tree}`);
     result = verify(tree);
     if (result.passed || result.status === 'blocked') break;
     feedback = summarize(result);
