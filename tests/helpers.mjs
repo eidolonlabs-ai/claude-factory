@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { draftAcceptance } from '../plugins/harness/lib/acceptance.mjs';
 
 export const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const PLUGIN = path.join(REPO, 'plugins', 'harness');
@@ -43,4 +44,24 @@ export function pathWithoutDocker(t) {
     fs.symlinkSync(found, path.join(bin, tool));
   }
   return bin;
+}
+
+/** What an owner does after reviewing a draft: accept the proposed mapping, optionally adding manual observations. */
+export function acceptanceFor(dir, task, edit = (r) => r) {
+  const r = cli(dir, ['prepare', task]);
+  if (r.code !== 0) throw new Error(r.err);
+  const record = edit({ ...JSON.parse(r.out), unresolved_decisions: [] });
+  const file = path.join(os.tmpdir(), `acceptance-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  fs.writeFileSync(file, JSON.stringify(record));
+  return file;
+}
+
+export function activate(dir, task = 'tasks/trim-note-titles.json', edit) {
+  return cli(dir, ['activate', task, '--acceptance', acceptanceFor(dir, task, edit)]);
+}
+
+/** Give a plan's parent and nodes reviewed records that accept the proposed mapping. */
+export function withRecords(plan) {
+  const rec = (task) => ({ ...draftAcceptance(task, ''), unresolved_decisions: [] });
+  return { ...plan, acceptance: plan.acceptance ?? rec(plan.task), nodes: plan.nodes.map((n) => ({ acceptance: rec(n.task), ...n })) };
 }

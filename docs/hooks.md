@@ -15,7 +15,7 @@ Always, in an adopted repository:
 
 - **Deny** writes to any file whose name starts with `.env` (except `.env.example`, `.env.sample`, `.env.template`, `.env.test`), private keys, `.git/`, `harness.json`, the `.harness/` control directory, and holdout files.
 - **Deny** `rm` of the filesystem root or home, `mkfs`, fork bombs, `git push`, `--no-verify`, host-wide `docker ... prune`, and downloads piped into a shell.
-- **Ask** for `git reset --hard`, `git clean -f`, interactive rebase, and the owner checkpoints `harness activate`, `deactivate`, and `approve-plan`. These become **deny** in `bypassPermissions` and `dontAsk` modes and in managed runs.
+- **Ask** for `git reset --hard`, `git clean -f`, interactive rebase, and the owner checkpoints `harness activate`, `deactivate`, `approve-plan`, and `evidence`. These become **deny** in `bypassPermissions` and `dontAsk` modes and in managed runs.
 
 While a task is active, also deny writes outside its allowed paths and to protected paths.
 

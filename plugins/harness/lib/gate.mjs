@@ -6,6 +6,7 @@ import { candidateHash, changedPaths, symlinkedPaths, integrityProblems } from '
 import { runCompose } from './compose.mjs';
 import { auditDiff } from './audit.mjs';
 import { configPath, newRunDir, logEvent, withLock } from './state.mjs';
+import { pendingManual, checkId } from './acceptance.mjs';
 
 const check = (id, status, summary, extra = {}) => ({ id, status, summary, ...extra });
 
@@ -59,6 +60,25 @@ function hostChecks(repo, config, runDir, budget) {
   });
 }
 
+/**
+ * Every criterion must be proven by something that ran on this candidate: a
+ * cited check that passed, and any manual observation recorded against this
+ * exact candidate digest.
+ */
+function acceptanceCheck(active, checks, candidate) {
+  if (!active) return check('acceptance', 'NOT_RUN', 'no active task: no criteria to map');
+  const status = (name) => checks.find((c) => c.id === checkId(name))?.status ?? 'NOT_RUN';
+  const unproven = active.acceptance.criteria.flatMap((c) => c.checks.filter((k) => status(k) !== 'PASS').map((k) => `${c.id}: ${k} is ${status(k)}`));
+  if (unproven.length > 0) return check('acceptance', 'FAIL', 'a cited check did not pass', { details: unproven });
+  const pending = pendingManual(active.acceptance, active.evidence, candidate);
+  if (pending.length > 0) {
+    return check('acceptance', 'NOT_RUN', `${pending.length} manual observation(s) awaited from the owner for this candidate`, {
+      details: pending.map((p) => `${p.criterion}: ${p.requirement}`), pending: true,
+    });
+  }
+  return check('acceptance', 'PASS', `${active.acceptance.criteria.length} criteria proven on this candidate`);
+}
+
 function auditCheck(repo, base) {
   const findings = auditDiff(repo.root, base);
   const high = findings.filter((f) => f.severity === 'high');
@@ -106,6 +126,7 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
       if (host.some((c) => c.status === 'FAIL')) return [...host, check('compose:e2e', 'NOT_RUN', 'not reached: a configured check failed')];
       return [...host, ...runCompose({ root: repo.root, compose: config.compose, runDir, id, budget })];
     });
+    step(['acceptance'], () => acceptanceCheck(active, checks, before));
     step(['holdouts'], () => check('holdouts', 'NOT_RUN', 'no holdouts configured (they need a separate verifier identity)'));
     step(['diff-audit'], () => auditCheck(repo, active?.base));
     const after = candidateHash(repo.root);
@@ -119,7 +140,9 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
     const ran = failed.length === 0 && e2e?.status === 'PASS' && unrun.length === 0;
     // Without a task nothing checks scope or frozen inputs: such a run can show
     // that the stack works, and can never be acceptance evidence.
-    const passed = ran && Boolean(active);
+    const accepted = checks.find((c) => c.id === 'acceptance');
+    const passed = ran && Boolean(active) && accepted?.status === 'PASS';
+    const pending = ran && Boolean(active) && Boolean(accepted?.pending);
     const blocked = failed.some((c) => c.blocked);
     const head = git(repo.root, 'rev-parse', '--verify', '-q', 'HEAD');
     const result = {
@@ -131,11 +154,11 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
       activation: active?.activation ?? null,
       role,
       engine: 'claude-code',
-      status: passed ? 'passed' : ran ? 'baseline' : blocked ? 'blocked' : 'failed',
+      status: passed ? 'passed' : pending ? 'pending' : ran && !active ? 'baseline' : blocked ? 'blocked' : 'failed',
       passed,
       merged: false,
       attempts,
-      checks: checks.map(({ blocked: _b, environmental: _e, ...c }) => c),
+      checks: checks.map(({ blocked: _b, environmental: _e, pending: _p, ...c }) => c),
       environmental: failed.length > 0 && failed.every((c) => c.environmental),
       candidate_sha256: after,
       base: active?.base ?? null,
@@ -162,7 +185,12 @@ export function summarize(result) {
       if (c.log) lines.push(`            log: ${c.log}`);
     }
   }
-  if (result.status === 'baseline') {
+  if (result.status === 'pending') {
+    const a = result.checks.find((c) => c.id === 'acceptance');
+    lines.push('  Automated checks passed. Awaiting the owner\'s manual observation on this candidate:');
+    (a.details ?? []).forEach((d) => lines.push(`            ${d}`));
+    lines.push('  The owner records each with: harness evidence <criterion-id> --note "<what was observed>"');
+  } else if (result.status === 'baseline') {
     lines.push('  Baseline only: no task is active, so scope and frozen inputs were not checked. This is not acceptance evidence.');
   } else if (!result.passed && result.status !== 'blocked' && !result.checks.some((c) => c.status === 'FAIL')) {
     lines.push('  Required checks did not run. NOT_RUN is never PASS.');

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { project, cli, hook, git, pathWithoutDocker, PLUGIN, REPO } from './helpers.mjs';
+import { activate, acceptanceFor, withRecords, project, cli, hook, git, pathWithoutDocker, PLUGIN, REPO } from './helpers.mjs';
 
 const TASK = 'tasks/trim-note-titles.json';
 const event = (dir, name, tool, tool_input, extra = {}) => ({ hook_event_name: name, cwd: dir, permission_mode: 'default', tool_name: tool, tool_input, ...extra });
@@ -19,9 +19,9 @@ test('activation freezes the task and the guard enforces its scope', (t) => {
   assert.match(hook(event(dir, 'SessionStart')).json.hookSpecificOutput.additionalContext, /no task is active/);
   assert.equal(hook(event(dir, 'PreToolUse', 'Edit', { file_path: path.join(dir, 'src/server.mjs') })).json, null, 'no task: ordinary edits pass');
 
-  const a = cli(dir, ['activate', TASK]);
+  const a = activate(dir);
   assert.equal(a.code, 0, a.err);
-  assert.equal(cli(dir, ['activate', TASK]).code, 2, 'a second activation is refused');
+  assert.equal(activate(dir).code, 2, 'a second activation is refused');
   assert.ok(fs.existsSync(path.join(dir, '.git', 'harness', 'active')), 'state lives in the Git common directory');
 
   const deny = (tool, input) => hook(event(dir, 'PreToolUse', tool, input)).json?.hookSpecificOutput.permissionDecision;
@@ -53,12 +53,12 @@ test('activation refuses unready tasks and dirty protected paths', (t) => {
   assert.match(cli(dir, ['activate', write('t3.json', { allowed_paths: ['docs'] })]).err, /editable_paths/);
   assert.match(cli(dir, ['activate', write('t4.json', { base_ref: 'no-such-ref' })]).err, /does not resolve/);
   fs.appendFileSync(path.join(dir, 'acceptance/e2e.mjs'), '\n// weakened\n');
-  assert.match(cli(dir, ['activate', TASK]).err, /protected paths already differ/);
+  assert.match(activate(dir).err, /protected paths already differ/);
 });
 
 test('NOT_RUN is never PASS: an unreachable Docker fails the gate', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), "export const normalizeTitle = (t) => (typeof t === 'string' && t.trim() ? t.trim() : null);\n");
   const r = cli(dir, ['verify', '--json'], { PATH: pathWithoutDocker(t) });
   assert.equal(r.code, 1);
@@ -72,7 +72,7 @@ test('NOT_RUN is never PASS: an unreachable Docker fails the gate', (t) => {
 
 test('the gate fails scope and blocks on protected changes before booting anything', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/extra.mjs'), 'export {};\n');
   let result = JSON.parse(cli(dir, ['verify', '--json']).out);
   assert.equal(result.status, 'failed');
@@ -92,7 +92,7 @@ test('the gate fails scope and blocks on protected changes before booting anythi
 test('the Stop hook blocks a failing candidate within its attempt budget', (t) => {
   const dir = project(t);
   const env = { PATH: pathWithoutDocker(t) };
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   assert.equal(hook(event(dir, 'Stop'), env).json, null, 'nothing changed: nothing to verify');
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), 'export const normalizeTitle = (t) => t;\n');
   for (let i = 1; i <= 3; i += 1) {
@@ -109,7 +109,7 @@ test('plans validate ownership and gate plan-approved activation', (t) => {
   const parent = { ...JSON.parse(fs.readFileSync(path.join(dir, TASK), 'utf8')), allowed_paths: ['src'] };
   const node = (id, paths) => ({ ...parent, id, allowed_paths: paths });
   const save = (plan) => {
-    fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(plan));
+    fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(withRecords(plan)));
     return cli(dir, ['approve-plan', 'plan.json']);
   };
   const base = { schema_version: 1, task: parent };
@@ -140,7 +140,7 @@ test('setup previews, applies and never overwrites', (t) => {
 
 test('the review packet carries the task and the diff, and flags missing evidence', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), 'export const normalizeTitle = (t) => t.trim();\n');
   const packet = cli(dir, ['review-packet']).out;
   assert.match(packet, /Acceptance criteria/);
@@ -169,4 +169,47 @@ test('the packaged plugin is self-consistent', () => {
     JSON.parse(fs.readFileSync(path.join(REPO, 'contract/guard-cases.json'), 'utf8')),
     'the packaged guard cases match the family contract',
   );
+});
+
+test('acceptance records: every criterion must be mapped before activation', (t) => {
+  const dir = project(t);
+  const TASK_FILE = 'tasks/trim-note-titles.json';
+  assert.match(cli(dir, ['activate', TASK_FILE]).err, /acceptance record is required/);
+  const draft = JSON.parse(cli(dir, ['prepare', TASK_FILE]).out);
+  assert.equal(draft.criteria.length, 2);
+  const tryRecord = (record) => {
+    const f = path.join(dir, '.git', 'r.json');
+    fs.writeFileSync(f, JSON.stringify(record));
+    return cli(dir, ['activate', TASK_FILE, '--acceptance', f]).err;
+  };
+  assert.match(tryRecord(draft), /unresolved decisions remain/);
+  const ready = { ...draft, unresolved_decisions: [] };
+  assert.match(tryRecord({ ...ready, criteria: ready.criteria.slice(1) }), /mapped 0 times/);
+  assert.match(tryRecord({ ...ready, criteria: ready.criteria.map((c) => ({ ...c, checks: [] })) }), /nothing proves it/);
+  assert.match(tryRecord({ ...ready, criteria: ready.criteria.map((c) => ({ ...c, checks: ['no-such-check'] })) }), /unknown check/);
+  assert.match(tryRecord({ ...ready, task_sha256: '0'.repeat(64) }), /does not match this task/);
+  assert.match(tryRecord({ ...ready, base: '0'.repeat(40) }), /regenerate/);
+  assert.equal(tryRecord(ready), '');
+});
+
+test('acceptance records: a manual observation is bound to the candidate it was made on', async (t) => {
+  const { getActive, updateActive, repoInfo } = await import('../plugins/harness/lib/state.mjs');
+  const { pendingManual } = await import('../plugins/harness/lib/acceptance.mjs');
+  const dir = project(t);
+  const r = activate(dir, 'tasks/trim-note-titles.json', (rec) => ({ ...rec, criteria: rec.criteria.map((c, i) => (i === 0 ? { ...c, manual: ['The page shows the trimmed title after a reload'] } : c)) }));
+  assert.equal(r.code, 0, r.err);
+  assert.match(cli(dir, ['evidence', 'c2', '--note', 'x']).err, /no manual requirement/);
+  assert.match(cli(dir, ['evidence', 'c1']).err, /--note/);
+  let s = JSON.parse(cli(dir, ['status', '--json']).out);
+  assert.equal(s.pending_manual.length, 1);
+  assert.equal(cli(dir, ['evidence', 'c1', '--note', 'Saw "hello" in the list after reloading']).code, 0);
+  s = JSON.parse(cli(dir, ['status', '--json']).out);
+  assert.equal(s.pending_manual.length, 0);
+  fs.writeFileSync(path.join(dir, 'src/title.mjs'), 'export const normalizeTitle = (x) => x;\n');
+  s = JSON.parse(cli(dir, ['status', '--json']).out);
+  assert.equal(s.pending_manual.length, 1, 'the observation does not carry over to a changed candidate');
+  assert.match(cli(dir, ['review-packet']).out, /manual: The page shows/);
+  const repo = repoInfo(dir);
+  assert.ok(pendingManual(getActive(repo).acceptance, getActive(repo).evidence, 'other').length === 1);
+  assert.ok(updateActive);
 });

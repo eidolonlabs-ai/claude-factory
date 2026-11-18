@@ -411,7 +411,7 @@ function simpleCommand(words, found, depth, state) {
   else if (name === 'node' || name === 'nodejs') {
     const s = plain.findIndex((a) => /(^|\/)harness\.mjs$/.test(a));
     const sub = s === -1 ? null : plain[s + 1];
-    if (['activate', 'deactivate', 'approve-plan'].includes(sub) && !args.includes('--approved')) {
+    if (['activate', 'deactivate', 'approve-plan', 'evidence'].includes(sub) && !args.includes('--approved')) {
       found.ask.push(`harness ${sub} is an owner checkpoint`);
     }
   }

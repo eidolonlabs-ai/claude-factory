@@ -25,8 +25,16 @@ git -C "$APP" -c user.name=demo -c user.email=demo@example.invalid add -A
 git -C "$APP" -c user.name=demo -c user.email=demo@example.invalid commit -q -m "baseline"
 "${HARNESS[@]}" doctor --repo "$APP"
 
-step "Owner activates the approved task"
-"${HARNESS[@]}" activate tasks/trim-note-titles.json --repo "$APP"
+step "Owner reviews which check proves each criterion, then activates the task"
+RECORD="$WORK/trim-note-titles.acceptance.json"
+"${HARNESS[@]}" prepare tasks/trim-note-titles.json --repo "$APP" --out "$RECORD"
+if "${HARNESS[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP" 2>/dev/null; then
+  die "activation must refuse a record nobody has reviewed"
+fi
+echo "(activation refuses the unreviewed draft)"
+# The owner's review: both criteria are asserted by acceptance/e2e.mjs, so the proposed mapping stands.
+node -e 'const fs=require("fs");const f=process.argv[1];const r=JSON.parse(fs.readFileSync(f));r.unresolved_decisions=[];fs.writeFileSync(f,JSON.stringify(r,null,2))' "$RECORD"
+"${HARNESS[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP"
 
 step "1. Guard denies an edit to a protected acceptance test"
 OUT="$(event PreToolUse Edit "{\"file_path\":\"$APP/acceptance/e2e.mjs\"}" | hook)"

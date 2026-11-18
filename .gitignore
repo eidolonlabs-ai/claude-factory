@@ -6,3 +6,4 @@
 .harness/runs/
 node_modules/
 .claude/worktrees/
+tasks/drafts/

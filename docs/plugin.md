@@ -47,7 +47,7 @@ Setup previews first and never overwrites an existing file. It adds:
 | `.claude/settings.json` | Permission deny rules for secrets and acceptance inputs. Written only if absent; otherwise a suggestion lands in `docs/harness/`. |
 | `docs/harness/CLAUDE.snippet.md` | Instructions to merge into `CLAUDE.md` after review. |
 | `tasks/example.json` | The task format. |
-| `.gitignore` entries | `.env` files, local settings, and `.claude/worktrees/`. |
+| `.gitignore` entries | `.env` files, local settings, `.claude/worktrees/`, and `tasks/drafts/` for task and acceptance drafts. |
 
 Then make `harness.json` describe your real stack. The gate rejects a fixed `container_name`, published host ports, privileged containers, the Docker socket, bind mounts outside the project, and external networks or volumes, and it needs a healthcheck on each service the test depends on. Run `harness verify` to establish the baseline before the first task.
 

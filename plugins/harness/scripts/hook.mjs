@@ -115,12 +115,16 @@ function stop(input) {
   const repo = adopted(canonical(input.cwd ?? process.cwd()));
   if (!repo || managed()) return; // a managed run's controller gates outside the session
   const active = getActive(repo);
+  // The audit shows which checkout each stop event was dispatched for.
+  logEvent(repo, { event: 'stop-hook', hook: input.hook_event_name, agent: input.agent_type ?? null, task: active?.task.id ?? null });
   if (!active) return;
   const limit = active.config.limits?.attempts ?? 3;
   const bump = (field) => updateActive(repo, active.activation, (cur) => ({ [field]: (cur[field] ?? 0) + 1 }));
   try {
     const candidate = candidateHash(repo.root);
     if (active.last?.candidate === candidate && active.last.passed) return;
+    const awaiting = () => out({ systemMessage: `Claude Harness: automated checks passed for ${active.task.id}. Acceptance now waits for the owner's manual observation on this candidate: run /harness:status.` });
+    if (active.last?.candidate === candidate && active.last.status === 'pending') return awaiting();
     if (changedPaths(repo.root, active.base).length === 0) return;
     if (active.attempts >= limit || (active.environmental ?? 0) >= limit) {
       logEvent(repo, { event: 'stop-ungated', task: active.task.id, attempts: active.attempts });
@@ -131,11 +135,12 @@ function stop(input) {
     // Environmental failures are not the candidate's fault and have their own budget.
     const field = result.environmental ? 'environmental' : 'attempts';
     const next = updateActive(repo, active.activation, (cur) => ({
-      attempts: result.passed ? 0 : cur.attempts + (field === 'attempts' ? 1 : 0),
-      environmental: result.passed ? 0 : (cur.environmental ?? 0) + (field === 'environmental' ? 1 : 0),
+      attempts: result.passed || result.status === 'pending' ? 0 : cur.attempts + (field === 'attempts' ? 1 : 0),
+      environmental: result.passed || result.status === 'pending' ? 0 : (cur.environmental ?? 0) + (field === 'environmental' ? 1 : 0),
       last: { run_id: result.run_id, candidate: result.candidate_sha256, passed: result.passed, status: result.status },
     }));
     if (!next) return; // deactivated while the gate ran: the owner cancelled the task
+    if (result.status === 'pending') return awaiting(); // only a person can supply what is missing
     if (result.passed) {
       out({ systemMessage: `Claude Harness: gate passed for ${active.task.id} (run ${result.run_id}). Ready for independent review; the owner decides when to ship.` });
       return;

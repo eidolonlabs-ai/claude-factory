@@ -6,6 +6,7 @@ import { loadConfig, validateTaskInRepo, validateTask } from './config.mjs';
 import { changedPaths, candidateHash, integrityProblems } from './candidate.mjs';
 import { repoInfo, requireRepo, getActive, setActive, updateActive, clearActive, latestResult, logEvent } from './state.mjs';
 import { runGate, summarize } from './gate.mjs';
+import { draftAcceptance, validateAcceptance, pendingManual } from './acceptance.mjs';
 
 const planPath = (repo, id) => path.join(repo.state, 'plans', `${id}.json`);
 
@@ -41,7 +42,17 @@ function claimApproved(repo, task, integration) {
  * Freeze an approved task, its resolved base and the current configuration
  * for this worktree. From here the guard enforces scope and Stop runs the gate.
  */
-export function activate(cwd, taskFile, { approved = false, controller = false, integration = false } = {}) {
+/** Draft acceptance record for a task: the proposed mapping the owner reviews before activation. */
+export function prepare(cwd, taskFile) {
+  const repo = requireRepo(cwd);
+  const config = loadConfig(repo);
+  const task = readJson(path.resolve(cwd, taskFile));
+  const { errors, base } = validateTaskInRepo(task, config, repo);
+  if (errors.length > 0) fail(`task is not ready:\n  - ${errors.join('\n  - ')}`);
+  return draftAcceptance(task, base);
+}
+
+export function activate(cwd, taskFile, { approved = false, controller = false, integration = false, acceptance: acceptanceFile = null } = {}) {
   const repo = requireRepo(cwd);
   const config = loadConfig(repo);
   const task = readJson(path.resolve(cwd, taskFile));
@@ -54,6 +65,15 @@ export function activate(cwd, taskFile, { approved = false, controller = false, 
     ...integrityProblems(repo.root, base, protectedPaths(config)),
   ];
   if (dirty.length > 0) fail(`protected paths already differ from the base; commit or revert them first:\n  - ${dirty.join('\n  - ')}`);
+  // A plan approval carries each task's reviewed record; otherwise the owner supplies it.
+  const plan = approved ? planFor(repo, digest(task)) : null;
+  if (approved && !plan) fail('--approved needs a task the owner approved through approve-plan; this task digest is not on record');
+  const planned = plan ? path.join(repo.state, 'plans', plan.task.id, `${task.id}.acceptance.json`) : null;
+  const source = planned ?? (acceptanceFile ? path.resolve(cwd, acceptanceFile) : null);
+  if (!source) fail('an acceptance record is required: draft one with `harness prepare <task>`, review the mapping, then pass --acceptance <record>');
+  const acceptance = readJson(source);
+  const problems = validateAcceptance(acceptance, task, base, config);
+  if (problems.length > 0) fail(`acceptance record is not ready:\n  - ${problems.join('\n  - ')}`);
   if (approved) claimApproved(repo, task, integration);
   const record = {
     schema_version: 1,
@@ -62,6 +82,8 @@ export function activate(cwd, taskFile, { approved = false, controller = false, 
     task_sha256: digest(task),
     config,
     config_sha256: digest(config),
+    acceptance,
+    evidence: [],
     base,
     worktree: repo.root,
     activated_at: now(),
@@ -72,6 +94,27 @@ export function activate(cwd, taskFile, { approved = false, controller = false, 
   setActive(repo, record);
   logEvent(repo, { event: 'activate', task: task.id, base });
   return record;
+}
+
+/**
+ * Owner checkpoint: record that a manual requirement was observed on the
+ * current candidate. It is an operator assertion bound to that candidate's
+ * digest; any later change makes it stale.
+ */
+export function recordEvidence(cwd, criterionId, { note, requirement } = {}) {
+  const repo = requireRepo(cwd);
+  const active = getActive(repo) ?? fail('no task is active in this worktree');
+  const criterion = active.acceptance.criteria.find((c) => c.id === criterionId) ?? fail(`no criterion "${criterionId}" (known: ${active.acceptance.criteria.map((c) => c.id).join(', ')})`);
+  if (criterion.manual.length === 0) fail(`criterion ${criterionId} has no manual requirement`);
+  if (!note || !String(note).trim()) fail('--note "<what was observed>" is required');
+  const index = requirement === undefined ? null : Number(requirement) - 1;
+  if (index !== null && !criterion.manual[index]) fail(`criterion ${criterionId} has ${criterion.manual.length} manual requirement(s)`);
+  const candidate = candidateHash(repo.root);
+  const entries = criterion.manual.map((_, i) => i).filter((i) => index === null || i === index)
+    .map((i) => ({ criterion: criterionId, requirement: i, text: criterion.manual[i], candidate, note: String(note).trim(), observed_at: now() }));
+  updateActive(repo, active.activation, (cur) => ({ evidence: [...(cur.evidence ?? []), ...entries] }));
+  logEvent(repo, { event: 'evidence', task: active.task.id, criterion: criterionId, candidate });
+  return { candidate, recorded: entries, pending: pendingManual(active.acceptance, [...(active.evidence ?? []), ...entries], candidate) };
 }
 
 export function deactivate(cwd) {
@@ -117,6 +160,7 @@ export function status(cwd) {
       activated_at: active.activated_at,
     },
     candidate,
+    pending_manual: active ? pendingManual(active.acceptance, active.evidence, candidate) : [],
     last: last && { run_id: last.run_id, status: last.status, finished: last.finished, fresh: last.candidate_sha256 === candidate, evidence: last.evidence },
   };
 }
@@ -143,6 +187,10 @@ export function reviewPacket(cwd) {
     '',
     '## Acceptance criteria',
     ...active.task.acceptance_criteria.map((c, i) => `${i + 1}. ${c}`),
+    '',
+    '## How each criterion is proven',
+    ...active.acceptance.criteria.map((c) => `- ${c.id}: ${[...c.checks, ...c.manual.map((m) => `manual: ${m}`)].join('; ')}`),
+    ...(active.evidence ?? []).filter((ev) => ev.candidate === candidate).map((ev) => `- owner observed ${ev.criterion} ("${ev.text}"): ${ev.note}`),
     '',
     '## Allowed paths',
     ...active.task.allowed_paths.map((p) => `- ${p}`),
@@ -171,6 +219,10 @@ function validatePlan(plan, config, repo) {
   }
   const parent = validateTaskInRepo(plan.task, config, repo);
   e.push(...parent.errors.map((x) => `parent: ${x}`));
+  // Records are written against the task as drafted; approval rebinds them to the pinned base.
+  const mapped = (task, record, allowManual) => validateAcceptance({ ...record, task_sha256: digest(task), base: parent.base }, task, parent.base, config, { allowManual })
+    .map((x) => `${task.id} acceptance: ${x}`);
+  if (parent.errors.length === 0) e.push(...(plan.acceptance ? mapped(plan.task, plan.acceptance, true) : ['parent: an acceptance record is required']));
   const ids = new Set();
   for (const n of plan.nodes) {
     const errs = validateTask(n.task);
@@ -182,6 +234,8 @@ function validatePlan(plan, config, repo) {
     if (n.task.base_ref !== plan.task.base_ref) e.push(`${id}: base_ref must equal the parent's base`);
     for (const p of n.task.allowed_paths) if (!coveredBy(plan.task.allowed_paths, p)) e.push(`${id}: path "${p}" is outside the parent task's allowed paths`);
     if (!Array.isArray(n.depends_on ?? [])) e.push(`${id}: depends_on must be an array`);
+    // Builders cannot wait for a person: manual observations belong to the integrated candidate.
+    if (parent.errors.length === 0) e.push(...(n.acceptance ? mapped(n.task, n.acceptance, false) : [`${id}: an acceptance record is required`]));
   }
   if (e.length > 0) return e;
   const deps = new Map(plan.nodes.map((n) => [n.task.id, n.depends_on ?? []]));
@@ -219,6 +273,8 @@ export function approvePlan(cwd, planFile) {
   const dir = path.join(repo.state, 'plans', plan.task.id);
   fs.mkdirSync(dir, { recursive: true });
   for (const t of tasks) writeJsonAtomic(path.join(dir, `${t.id}.json`), t);
+  const records = [[pinned.task, plan.acceptance], ...pinned.nodes.map((n) => [n.task, n.acceptance])];
+  for (const [t, a] of records) writeJsonAtomic(path.join(dir, `${t.id}.acceptance.json`), { ...a, task_sha256: digest(t), base });
   logEvent(repo, { event: 'approve-plan', task: plan.task.id, nodes: plan.nodes.length });
   return { plan: record, tasks: dir };
 }
@@ -272,19 +328,22 @@ export function integrate(cwd, planId, branches) {
  * Managed unattended run: a headless Claude Code session per attempt in a
  * dedicated worktree, with the gate run here, outside the agent's session.
  */
-export function managedRun(cwd, taskFile) {
+export function managedRun(cwd, taskFile, acceptanceFile) {
   const repo = requireRepo(cwd);
   const config = loadConfig(repo);
   const task = readJson(path.resolve(cwd, taskFile));
   const { errors, base } = validateTaskInRepo(task, config, repo);
   if (errors.length > 0) fail(`task is not ready:\n  - ${errors.join('\n  - ')}`);
+  if (!acceptanceFile) fail('an acceptance record is required: harness run <task> --acceptance <record>');
+  const problems = validateAcceptance(readJson(path.resolve(cwd, acceptanceFile)), task, base, config);
+  if (problems.length > 0) fail(`acceptance record is not ready:\n  - ${problems.join('\n  - ')}`);
   const stamp = Date.now().toString(36);
   const branch = `harness/${task.id}-${stamp}`;
   const tree = path.join(repo.root, '.claude', 'worktrees', `harness-run-${task.id}-${stamp}`);
   gitOut(repo.root, 'worktree', 'add', '-b', branch, tree, base);
   const frozen = path.join(repo.state, 'managed', `${task.id}-${stamp}.json`);
   writeJsonAtomic(frozen, task);
-  const record = activate(tree, frozen, { controller: true });
+  const record = activate(tree, frozen, { controller: true, acceptance: acceptanceFile && path.resolve(cwd, acceptanceFile) });
   const wt = repoInfo(tree);
   const limit = record.config.limits?.attempts ?? 3;
   const bin = process.env.CLAUDE_HARNESS_CLAUDE_BIN ?? 'claude';
@@ -315,7 +374,7 @@ export function managedRun(cwd, taskFile) {
     }
     if (!updateActive(wt, record.activation, () => ({ attempts: attempt }))) fail(`the task was deactivated during the run; worktree retained at ${tree}`);
     result = verify(tree);
-    if (result.passed || result.status === 'blocked') break;
+    if (result.passed || result.status === 'blocked' || result.status === 'pending') break;
     feedback = summarize(result);
   }
   return { worktree: tree, branch, result, cost_usd: cost || null };

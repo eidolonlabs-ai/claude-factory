@@ -14,7 +14,12 @@ const USAGE = `Claude Harness
   harness setup [--apply]            preview or apply the adoption scaffold
   harness doctor                     check Node, Git, Docker and harness.json
   harness check-task <task.json>     validate a task draft against this repository
-  harness activate <task.json>       owner checkpoint: freeze the task for this worktree
+  harness prepare <task.json> [--out <file>]
+                                     draft the acceptance record: which check proves each criterion
+  harness activate <task.json> --acceptance <record.json>
+                                     owner checkpoint: freeze the task for this worktree
+  harness evidence <criterion-id> --note <text> [--requirement <n>]
+                                     owner checkpoint: record a manual observation on this candidate
   harness deactivate                 archive the active task
   harness verify                     run the gate on this worktree
   harness status                     active task, candidate and last gate
@@ -22,7 +27,8 @@ const USAGE = `Claude Harness
   harness approve-plan <plan.json>   owner checkpoint: approve a parallel task graph
   harness integrate <plan-id> --branch <task-id>=<ref> ...
                                      merge builder branches and gate the result
-  harness run <task.json>            managed unattended run in a new worktree
+  harness run <task.json> --acceptance <record.json>
+                                     managed unattended run in a new worktree
   harness guard-test <cases.json>    run guard decision cases
 
 Options: --repo <path> (default: current directory), --json
@@ -37,7 +43,8 @@ function parse(argv) {
     else if (a === '--branch') {
       const [id, ...ref] = String(argv[++i] ?? '').split('=');
       opts.branch[id] = ref.join('=');
-    } else if (a.startsWith('--')) opts[a.slice(2)] = true;
+    } else if (['--acceptance', '--note', '--out', '--requirement'].includes(a)) opts[a.slice(2)] = argv[++i];
+    else if (a.startsWith('--')) opts[a.slice(2)] = true;
     else opts._.push(a);
   }
   return opts;
@@ -79,8 +86,23 @@ try {
       process.exit(errors.length === 0 ? 0 : 1);
       break;
     }
+    case 'prepare': {
+      const r = wf.prepare(cwd, need('a task file'));
+      const text = `${JSON.stringify(r, null, 2)}\n`;
+      if (opts.out) {
+        fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
+        fs.writeFileSync(path.resolve(opts.out), text);
+        console.log(`Draft acceptance record written to ${path.resolve(opts.out)}\nReview which check proves each criterion, add manual observations where no check can, then clear unresolved_decisions.`);
+      } else process.stdout.write(text);
+      break;
+    }
+    case 'evidence': {
+      const r = wf.recordEvidence(cwd, need('a criterion id'), { note: opts.note, requirement: opts.requirement });
+      print(r, `Recorded ${r.recorded.length} observation(s) for candidate ${r.candidate.slice(0, 12)}.${r.pending.length ? `\nStill awaited: ${r.pending.map((p) => `${p.criterion}: ${p.requirement}`).join('; ')}` : '\nNo manual observations remain. Run `harness verify` to complete acceptance.'}`);
+      break;
+    }
     case 'activate': {
-      const r = wf.activate(cwd, need('a task file'), { approved: opts.approved });
+      const r = wf.activate(cwd, need('a task file'), { approved: opts.approved, acceptance: opts.acceptance });
       print(r, `Activated ${r.task.id} at base ${r.base.slice(0, 12)} in ${r.worktree}\nAllowed paths: ${r.task.allowed_paths.join(', ')}\nThe guard now enforces scope and the gate runs when the session stops.`);
       break;
     }
@@ -97,6 +119,7 @@ try {
       print(s, [
         `Worktree: ${s.worktree}${s.adopted ? '' : ' (not adopted: no harness.json)'}`,
         s.active ? `Active task: ${s.active.id} - ${s.active.title}\n  base ${s.active.base.slice(0, 12)} · attempts ${s.active.attempts}/${s.active.attempt_limit}\n  allowed: ${s.active.allowed_paths.join(', ')}` : 'Active task: none',
+        ...(s.pending_manual.length ? [`Awaiting manual observation on this candidate:\n${s.pending_manual.map((p) => `  ${p.criterion}: ${p.requirement}`).join('\n')}`] : []),
         s.last ? `Last gate: ${s.last.status} (${s.last.run_id})${s.last.fresh ? '' : ' - STALE: the candidate changed since'}\n  evidence: ${s.last.evidence}` : 'Last gate: none',
         `Candidate: ${s.candidate.slice(0, 12)}`,
       ].join('\n'));
@@ -117,7 +140,7 @@ try {
       break;
     }
     case 'run': {
-      const r = wf.managedRun(cwd, need('a task file'));
+      const r = wf.managedRun(cwd, need('a task file'), opts.acceptance);
       if (!opts.json) console.log(`Worktree: ${r.worktree}\nBranch: ${r.branch}${r.cost_usd ? `\nCost: $${r.cost_usd.toFixed(2)}` : ''}`);
       gateExit(r.result);
       break;

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decide } from '../plugins/harness/lib/guard.mjs';
-import { project, cli, hook, git } from './helpers.mjs';
+import { activate, acceptanceFor, project, cli, hook, git } from './helpers.mjs';
 
 const task = { id: 't', allowed_paths: ['src'] };
 const scoped = { task, protected: ['acceptance', 'compose.yaml', 'harness.json'], editable: ['src'], isIgnored: (rel) => rel === 'node_modules' || rel.startsWith('build') };
@@ -123,7 +123,7 @@ test('the real hook protects Git internals from every entry point', (t) => {
   fs.symlinkSync('../harness.json', path.join(dir, 'src/alias.json'));
   assert.equal(ev('Edit', { file_path: path.join(dir, 'src/alias.json') }), 'deny', 'a symlink to a control file');
 
-  cli(dir, ['activate', 'tasks/trim-note-titles.json']);
+  activate(dir);
   const tree = path.join(dir, '.claude/worktrees/w1');
   git(dir, 'worktree', 'add', '-q', '-b', 'w1', tree, 'HEAD');
   const state = path.join(dir, '.git/harness/active/x.json');

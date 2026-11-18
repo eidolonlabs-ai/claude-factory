@@ -7,7 +7,7 @@ import { validateConfig } from './config.mjs';
 import { dockerAvailable } from './compose.mjs';
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates');
-const IGNORES = ['.env', '.env.*', '!.env.example', '.claude/settings.local.json', '.claude/worktrees/'];
+const IGNORES = ['.env', '.env.*', '!.env.example', '.claude/settings.local.json', '.claude/worktrees/', 'tasks/drafts/'];
 
 /**
  * Adoption scaffold. Fills in missing files and never overwrites: existing

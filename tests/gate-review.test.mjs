@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { project, cli, hook, git, pathWithoutDocker } from './helpers.mjs';
+import { activate, acceptanceFor, withRecords, project, cli, hook, git, pathWithoutDocker } from './helpers.mjs';
 import { auditDiff } from '../plugins/harness/lib/audit.mjs';
 import { lintModel } from '../plugins/harness/lib/compose.mjs';
 
@@ -16,7 +16,7 @@ const stopEvent = (dir) => ({ hook_event_name: 'Stop', cwd: dir, permission_mode
 
 test('C2: index flags and replace refs cannot hide a tampered acceptance test', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), FIX);
   git(dir, 'update-index', '--skip-worktree', 'acceptance/e2e.mjs');
   fs.writeFileSync(path.join(dir, 'acceptance/e2e.mjs'), 'console.log("ok")\n');
@@ -29,7 +29,7 @@ test('C2: index flags and replace refs cannot hide a tampered acceptance test', 
 
   const dir2 = project(t);
   const base = git(dir2, 'rev-parse', 'HEAD').stdout.trim();
-  cli(dir2, ['activate', TASK]);
+  activate(dir2);
   fs.writeFileSync(path.join(dir2, 'acceptance/e2e.mjs'), 'console.log("ok")\n');
   git(dir2, 'commit', '-qam', 'tamper');
   git(dir2, 'replace', base, 'HEAD');
@@ -39,7 +39,7 @@ test('C2: index flags and replace refs cannot hide a tampered acceptance test', 
 
 test('C4: nested repositories and new ignore rules fail scope', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.mkdirSync(path.join(dir, 'src/lib'));
   git(path.join(dir, 'src/lib'), 'init', '-q');
   fs.writeFileSync(path.join(dir, 'src/lib/x.mjs'), 'eval("1")\n');
@@ -71,7 +71,7 @@ test('C1: plans pin the base, the parent is integration-only, and nodes are clai
   assert.equal(parent.base_ref, 'HEAD');
   const plan = { schema_version: 1, task: parent, nodes: [{ task: { ...parent, id: 'a', allowed_paths: ['src/title.mjs'] } }, { task: { ...parent, id: 'b', allowed_paths: ['src/server.mjs'] } }] };
   const file = path.join(dir, '.git', 'plan.json');
-  fs.writeFileSync(file, JSON.stringify(plan));
+  fs.writeFileSync(file, JSON.stringify(withRecords(plan)));
   assert.equal(cli(dir, ['approve-plan', file]).code, 0);
   const stored = (id) => path.join(dir, '.git/harness/plans/titles', `${id}.json`);
   assert.equal(JSON.parse(fs.readFileSync(stored('titles'), 'utf8')).base_ref, base, 'HEAD is pinned to a SHA at approval');
@@ -105,7 +105,7 @@ test('C1: plans pin the base, the parent is integration-only, and nodes are clai
 
 test('H1: a gate that cannot run blocks the stop instead of ending the turn silently', (t) => {
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), FIX);
   const locks = path.join(dir, '.git/harness/locks');
   fs.mkdirSync(locks, { recursive: true });
@@ -120,12 +120,12 @@ test('H1: a gate that cannot run blocks the stop instead of ending the turn sile
 test('M2 and M5: an explicit verify does not reuse another activation and resets nothing on failure', (t) => {
   const dir = project(t);
   const env = { PATH: pathWithoutDocker(t) };
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), FIX);
   verify(dir, env);
   assert.equal(JSON.parse(cli(dir, ['status', '--json']).out).last.status, 'failed');
   cli(dir, ['deactivate']);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   assert.match(cli(dir, ['review-packet']).out, /No gate has run/, 'evidence from the earlier activation is not reused');
   for (let i = 0; i < 3; i += 1) hook(stopEvent(dir), env);
   const blocked = hook(stopEvent(dir), env).json;
@@ -138,7 +138,7 @@ test('M2 and M5: an explicit verify does not reuse another activation and resets
 test('H3: a task deactivated while its record is stale is not resurrected', async (t) => {
   const { updateActive, getActive, repoInfo } = await import('../plugins/harness/lib/state.mjs');
   const dir = project(t);
-  cli(dir, ['activate', TASK]);
+  activate(dir);
   const repo = repoInfo(dir);
   const stale = getActive(repo);
   cli(dir, ['deactivate']);

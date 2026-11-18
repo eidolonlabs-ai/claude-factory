@@ -10,7 +10,7 @@ Coordinate parallel builders for: $ARGUMENTS
 Separately green builders do not make a green application. Only the integrated candidate's gate counts.
 
 1. Split the parent task into nodes. Each node is a complete task with the parent's `base_ref` and `allowed_paths` inside the parent's. Nodes that own overlapping paths, or that need another node's output, declare `depends_on`. Keep shared contracts in one node.
-2. Write the plan as `{ "schema_version": 1, "task": <parent>, "nodes": [{ "task": <node>, "depends_on": [] }] }` and show it to the owner. The owner approves it once; approval pins `base_ref` to a commit SHA for every task in the plan:
+2. Write the plan as `{ "schema_version": 1, "task": <parent>, "acceptance": <record>, "nodes": [{ "task": <node>, "acceptance": <record>, "depends_on": [] }] }`. Every task carries its acceptance record (draft each with `prepare`). Node records cite checks only; manual observations belong to the parent, on the integrated candidate. Show the plan and the mappings to the owner. The owner approves it once; approval pins `base_ref` to a commit SHA for every task in the plan:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/harness.mjs" approve-plan <plan.json>
