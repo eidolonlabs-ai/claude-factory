@@ -1,5 +1,5 @@
 import { fail, readJson, git } from './util.mjs';
-import { coveredBy, protectedPaths } from './policy.mjs';
+import { coveredBy, patternsOverlap, protectedPaths } from './policy.mjs';
 import { configPath } from './state.mjs';
 
 const SERVICE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -22,26 +22,50 @@ export function validateConfig(c) {
   else {
     const names = new Set();
     c.checks.forEach((k, i) => {
-      if (!k || typeof k.name !== 'string' || !k.name) e.push(`checks[${i}].name is required`);
+      if (!k || typeof k !== 'object' || Array.isArray(k)) {
+        e.push(`checks[${i}] must be an object`);
+        return;
+      }
+      unknownKeys(k, ['name', 'argv', 'timeout_seconds'], `checks[${i}]`, e);
+      if (typeof k.name !== 'string' || !k.name) e.push(`checks[${i}].name is required`);
       else if (names.has(k.name) || k.name.startsWith('compose:')) e.push(`checks[${i}].name "${k.name}" is duplicated or reserved`);
       else names.add(k.name);
-      if (!isStrings(k?.argv, 1)) e.push(`checks[${i}].argv must be a non-empty array of strings (no shell)`);
-      if (k?.timeout_seconds !== undefined && !(Number.isInteger(k.timeout_seconds) && k.timeout_seconds > 0)) e.push(`checks[${i}].timeout_seconds must be a positive integer`);
+      if (!isStrings(k.argv, 1)) e.push(`checks[${i}].argv must be a non-empty array of strings (no shell)`);
+      if (k.timeout_seconds !== undefined && !(Number.isInteger(k.timeout_seconds) && k.timeout_seconds > 0)) e.push(`checks[${i}].timeout_seconds must be a positive integer`);
     });
   }
   const p = c.policy;
-  if (!p || !isStrings(p.editable_paths, 1) || !isStrings(p.protected_paths, 1)) {
-    e.push('policy.editable_paths and policy.protected_paths must each list at least one path');
+  if (!p || typeof p !== 'object' || Array.isArray(p)) e.push('policy must be an object');
+  else {
+    unknownKeys(p, ['editable_paths', 'protected_paths'], 'policy', e);
+    if (!isStrings(p.editable_paths, 1) || !isStrings(p.protected_paths, 1)) {
+      e.push('policy.editable_paths and policy.protected_paths must each list at least one path');
+    }
   }
   const k = c.compose;
-  if (!k || !isStrings(k.files, 1) || !isStrings(k.services, 1) || typeof k.test_service !== 'string') {
-    e.push('compose.files, compose.services and compose.test_service are required');
-  } else {
-    for (const s of [...k.services, k.test_service]) if (!SERVICE.test(s)) e.push(`compose service name "${s}" is invalid`);
-    if (k.services.includes(k.test_service)) e.push('compose.test_service must not also be listed in compose.services');
-    if (k.timeout_seconds !== undefined && !(Number.isInteger(k.timeout_seconds) && k.timeout_seconds > 0)) e.push('compose.timeout_seconds must be a positive integer');
+  if (!k || typeof k !== 'object' || Array.isArray(k)) e.push('compose must be an object');
+  else {
+    unknownKeys(k, ['files', 'services', 'test_service', 'timeout_seconds'], 'compose', e);
+    if (!isStrings(k.files, 1) || !isStrings(k.services, 1) || typeof k.test_service !== 'string') {
+      e.push('compose.files, compose.services and compose.test_service are required');
+    } else {
+      for (const f of k.files) if (!SAFE_PATH.test(f)) e.push(`compose.files entry "${f}" must be repo-relative without "..", backslashes or .git`);
+      for (const s of [...k.services, k.test_service]) if (!SERVICE.test(s)) e.push(`compose service name "${s}" is invalid`);
+      if (k.services.includes(k.test_service)) e.push('compose.test_service must not also be listed in compose.services');
+      if (k.timeout_seconds !== undefined && !(Number.isInteger(k.timeout_seconds) && k.timeout_seconds > 0)) e.push('compose.timeout_seconds must be a positive integer');
+    }
   }
-  if (c.limits?.attempts !== undefined && !(Number.isInteger(c.limits.attempts) && c.limits.attempts > 0)) e.push('limits.attempts must be a positive integer');
+  if (c.limits !== undefined) {
+    if (!c.limits || typeof c.limits !== 'object' || Array.isArray(c.limits)) e.push('limits must be an object');
+    else {
+      unknownKeys(c.limits, ['attempts', 'agent_seconds', 'run_seconds'], 'limits', e);
+      for (const field of ['attempts', 'agent_seconds', 'run_seconds']) {
+        if (c.limits[field] !== undefined && !(Number.isInteger(c.limits[field]) && c.limits[field] > 0)) {
+          e.push(`limits.${field} must be a positive integer`);
+        }
+      }
+    }
+  }
   return e;
 }
 
@@ -76,7 +100,7 @@ export function validateTaskInRepo(task, config, repo) {
   if (!base) e.push(`base_ref "${task.base_ref}" does not resolve to a commit`);
   const guarded = protectedPaths(config);
   for (const p of task.allowed_paths) {
-    if (coveredBy(guarded, p) || guarded.some((g) => `${g}/`.startsWith(`${p}/`))) e.push(`allowed path "${p}" overlaps a protected path`);
+    if (guarded.some((g) => patternsOverlap(g.toLowerCase(), p.toLowerCase()))) e.push(`allowed path "${p}" overlaps a protected path`);
     else if (!coveredBy(config.policy.editable_paths, p)) e.push(`allowed path "${p}" is outside policy.editable_paths`);
   }
   return { errors: e, base };

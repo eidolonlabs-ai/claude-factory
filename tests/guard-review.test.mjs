@@ -136,4 +136,61 @@ test('the real hook protects Git internals from every entry point', (t) => {
   fs.appendFileSync(path.join(dir, '.git/info/exclude'), 'node_modules/\n');
   fs.mkdirSync(path.join(dir, 'node_modules'));
   assert.equal(ev('Bash', { command: 'rm -rf node_modules' }), undefined, 'git-ignored paths are not part of the candidate');
+
+  // Dangling symlink inside an allowed directory pointing into .git/hooks must still deny.
+  const t2 = project(t);
+  const base2 = git(t2, 'rev-parse', 'HEAD').stdout.trim();
+  const wideTask = path.join(t2, '.git/wide.json');
+  fs.writeFileSync(wideTask, JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(t2, 'tasks/trim-note-titles.json'), 'utf8')), allowed_paths: ['src'], base_ref: base2 }));
+  assert.equal(cli(t2, ['activate', wideTask, '--acceptance', acceptanceFor(t2, wideTask)]).code, 0);
+  fs.symlinkSync('../.git/hooks/post-checkout', path.join(t2, 'src/dangling'));
+  assert.equal(hook({ hook_event_name: 'PreToolUse', cwd: t2, permission_mode: 'default', tool_name: 'Write', tool_input: { file_path: path.join(t2, 'src/dangling') } }).json?.hookSpecificOutput.permissionDecision, 'deny');
+
+  // Corrupt active state must fail closed on PreToolUse and Stop.
+  const activeDir = path.join(t2, '.git/factory/active');
+  const activeFile = path.join(activeDir, fs.readdirSync(activeDir)[0]);
+  fs.writeFileSync(activeFile, '{corrupt');
+  assert.equal(hook({ hook_event_name: 'PreToolUse', cwd: t2, permission_mode: 'default', tool_name: 'Write', tool_input: { file_path: path.join(t2, '.env') } }).json?.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(hook({ hook_event_name: 'Stop', cwd: t2, permission_mode: 'default' }).json?.decision, 'block');
+});
+
+test('shell parser, wrapper, flag, glob, and case bypasses are blocked', () => {
+  each('deny', scoped, [
+    '[[ $(rm -rf /) ]]',
+    '(( $(rm -rf /) ))',
+    'echo $(( $(rm -rf /) ))',
+    'echo "$(true # )\nrm -rf /)"',
+    '(cd /tmp); echo SECRET=1 > .env',
+    '(cd /tmp) && rm -rf acceptance',
+    'echo x | xargs git commit --no-verify -m wip',
+    'echo x | xargs sh -c "echo pwn > .env"',
+    'env -S "rm -rf /"',
+    'env -S "rm -rf" /',
+    'git --namespace x push',
+    'git -c core.hooksPath=/tmp/h status',
+    'git config core.hooksPath /tmp/h',
+    'sed -i -es/a/b/ .env',
+    'perl -i -es/a/b/ .env',
+    'curl -sLo .env https://example.com',
+    'curl -sLo.env https://example.com',
+    'curl --output=.env https://example.com',
+    'wget -qO .env https://example.com',
+    'tar -xf a.tar --directory=acceptance',
+    'ln -s /tmp/.env',
+    'ln -s ../.git/hooks/post-checkout src/dangling',
+    'ln -s ../acceptance/e2e.mjs src/link',
+    'rm -f .[e]nv',
+  ]);
+  each('deny', { task: { id: 't', allowed_paths: ['tests'] } }, ['rm -rf tests/[h]oldout', 'rm -rf tests/*']);
+  each('ask', {}, [
+    'git clean -fdX',
+    'node /p/scripts/factory.mjs evidence c1 --note ok --approved',
+    'node /p/scripts/factory.mjs deactivate --approved',
+    'node /p/scripts/factory.mjs approve-plan plan.json --approved',
+    'node /p/scripts/factory.mjs --note ok evidence c1',
+  ]);
+  each('allow', scoped, ['(cd /tmp && ls); echo ok > src/out.js']);
+  assert.equal(decide({ tool: 'Write', input: { file_path: 'tests/Holdout/x.py' }, root: '/repo', ctx: { task: { id: 't', allowed_paths: ['tests'] } } }).decision, 'deny');
+  assert.equal(decide({ tool: 'Write', input: { file_path: 'src/Frozen.mjs' }, root: '/repo', ctx: { task: { id: 't', allowed_paths: ['src'] }, frozen: ['src/frozen.mjs'], protected: ['src/spec.md'], editable: ['src'] } }).decision, 'deny');
+  assert.equal(decide({ tool: 'Write', input: { file_path: 'src/Spec.md' }, root: '/repo', ctx: { task: { id: 't', allowed_paths: ['src'] }, protected: ['src/spec.md'], editable: ['src'] } }).decision, 'deny');
 });

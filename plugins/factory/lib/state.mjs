@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { git, gitOut, fail, sleep, readJsonIfExists, writeJsonAtomic, sha256 } from './util.mjs';
 
 const EVENT_LIMIT = 512 * 1024;
@@ -100,19 +101,30 @@ export function withLock(repo, fn, waitSeconds = 0) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   const deadline = Date.now() + waitSeconds * 1000;
   for (;;) {
+    const tmp = `${lock}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    let acquired = false;
     try {
-      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
-      break;
+      fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      fs.linkSync(tmp, lock);
+      acquired = true;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
+    } finally {
+      fs.rmSync(tmp, { force: true });
     }
+    if (acquired) break;
     let holder = null;
     try {
       holder = JSON.parse(fs.readFileSync(lock, 'utf8'));
+      if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 0) throw new Error('invalid lock');
       process.kill(holder.pid, 0);
-    } catch {
-      fs.rmSync(lock, { force: true }); // unreadable, or its process is gone
-      continue;
+    } catch (e) {
+      if (e?.code === 'EPERM') {
+        // Alive process owned by another UID
+      } else {
+        fs.rmSync(lock, { force: true }); // unreadable, invalid, or its process is gone
+        continue;
+      }
     }
     if (Date.now() >= deadline) fail(`another gate is running in this worktree (pid ${holder.pid}, since ${holder.at})`);
     sleep(1000);

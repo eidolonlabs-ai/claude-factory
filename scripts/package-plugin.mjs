@@ -13,6 +13,9 @@ const manifest = JSON.parse(
 if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) {
   throw new Error("Release requires a semantic version in plugin.json");
 }
+if (manifest.icon && !fs.existsSync(path.join(source, manifest.icon))) {
+  throw new Error(`Plugin icon is missing: ${manifest.icon}`);
+}
 
 const outIdx = process.argv.indexOf("--out");
 const outDir = path.resolve(
@@ -53,6 +56,7 @@ try {
   const archive = path.join(outDir, `claude-factory-${manifest.version}.tgz`);
   execFileSync("tar", ["-czf", archive, "-C", temp, "factory"], {
     stdio: "pipe",
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
   });
   fs.writeFileSync(
     path.join(outDir, `claude-factory-${manifest.version}.sha256.json`),

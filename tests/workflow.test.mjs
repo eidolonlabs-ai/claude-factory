@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { activate, acceptanceFor, withRecords, project, cli, hook, git, pathWithoutDocker, PLUGIN, REPO } from './helpers.mjs';
 
 const TASK = 'tasks/trim-note-titles.json';
@@ -114,6 +116,7 @@ test('plans validate ownership and gate plan-approved activation', (t) => {
   };
   const base = { schema_version: 1, task: parent };
   assert.match(save({ ...base, nodes: [{ task: node('a', ['src/title.mjs']) }, { task: node('b', ['src']) }] }).err, /overlapping paths/);
+  assert.match(save({ ...base, nodes: [{ task: node('a', ['src/*.mjs']) }, { task: node('b', ['src/title.*']) }] }).err, /overlapping paths/);
   assert.match(save({ ...base, nodes: [{ task: node('a', ['docs']) }] }).err, /outside the parent/);
   assert.match(save({ ...base, nodes: [{ task: node('a', ['src/title.mjs']), depends_on: ['b'] }, { task: node('b', ['src/server.mjs']), depends_on: ['a'] }] }).err, /cycle/);
   fs.writeFileSync(path.join(dir, 'rogue.json'), JSON.stringify(node('rogue', ['src/server.mjs'])));
@@ -169,6 +172,31 @@ test('the packaged plugin is self-consistent', () => {
     JSON.parse(fs.readFileSync(path.join(REPO, 'contract/guard-cases.json'), 'utf8')),
     'the packaged guard cases match the family contract',
   );
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(PLUGIN, 'schemas/result.schema.json'), 'utf8')),
+    JSON.parse(fs.readFileSync(path.join(REPO, 'contract/result.schema.json'), 'utf8')),
+    'the packaged result schema matches the family contract',
+  );
+  const icon = path.join(PLUGIN, manifest.icon);
+  assert.ok(fs.existsSync(icon), 'plugin icon exists');
+  const hdr = fs.readFileSync(icon);
+  assert.equal(hdr.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'icon is a valid PNG');
+  assert.equal(hdr.readUInt32BE(16), 512, 'icon width is 512');
+  assert.equal(hdr.readUInt32BE(20), 512, 'icon height is 512');
+});
+
+test('package-plugin creates a release tarball and sha256 manifest', (t) => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-pkg-test-'));
+  t.after(() => fs.rmSync(out, { recursive: true, force: true }));
+  const r = spawnSync('node', [path.join(REPO, 'scripts/package-plugin.mjs'), '--out', out], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, '.claude-plugin/plugin.json'), 'utf8'));
+  const tgz = path.join(out, `claude-factory-${manifest.version}.tgz`);
+  const sha = JSON.parse(fs.readFileSync(path.join(out, `claude-factory-${manifest.version}.sha256.json`), 'utf8'));
+  assert.ok(fs.existsSync(tgz));
+  assert.equal(sha.plugin, manifest.name);
+  assert.equal(sha.version, manifest.version);
+  assert.ok('.claude-plugin/icon.png' in sha.files);
 });
 
 test('acceptance records: every criterion must be mapped before activation', (t) => {

@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sh, git, gitOut, fail, digest, now, readJson, readJsonIfExists, writeJsonAtomic, bounded, tail } from './util.mjs';
-import { coveredBy, covers, protectedPaths } from './policy.mjs';
-import { loadConfig, validateTaskInRepo, validateTask } from './config.mjs';
+import { coveredBy, patternsOverlap, protectedPaths } from './policy.mjs';
+import { loadConfig, validateConfig, validateTaskInRepo, validateTask } from './config.mjs';
 import { changedPaths, candidateHash, integrityProblems } from './candidate.mjs';
-import { repoInfo, requireRepo, getActive, setActive, updateActive, clearActive, latestResult, logEvent } from './state.mjs';
+import { repoInfo, requireRepo, getActive, setActive, updateActive, clearActive, latestResult, logEvent, withLock } from './state.mjs';
 import { runGate, summarize } from './gate.mjs';
 import { draftAcceptance, validateAcceptance, pendingManual } from './acceptance.mjs';
 
@@ -27,15 +27,17 @@ function planFor(repo, taskDigest) {
  */
 function claimApproved(repo, task, integration) {
   const d = digest(task);
-  const plan = planFor(repo, d) ?? fail('--approved needs a task the owner approved through approve-plan; this task digest is not on record');
-  const isParent = digest(plan.task) === d;
-  if (isParent !== Boolean(integration)) {
-    fail(isParent ? 'the parent task of a plan is activated by `factory integrate`, in its integration worktree' : 'integration activates the plan\'s parent task only');
-  }
-  if (isParent) return;
-  const claims = plan.claims ?? {};
-  if (claims[d] && claims[d] !== repo.root && fs.existsSync(claims[d])) fail(`task ${task.id} is already claimed by the builder in ${claims[d]}`);
-  writeJsonAtomic(planPath(repo, plan.task.id), { ...plan, claims: { ...claims, [d]: repo.root } });
+  return withLock({ ...repo, key: 'plans' }, () => {
+    const plan = planFor(repo, d) ?? fail('--approved needs a task the owner approved through approve-plan; this task digest is not on record');
+    const isParent = digest(plan.task) === d;
+    if (isParent !== Boolean(integration)) {
+      fail(isParent ? 'the parent task of a plan is activated by `factory integrate`, in its integration worktree' : 'integration activates the plan\'s parent task only');
+    }
+    if (isParent) return;
+    const claims = plan.claims ?? {};
+    if (claims[d] && claims[d] !== repo.root && fs.existsSync(claims[d])) fail(`task ${task.id} is already claimed by the builder in ${claims[d]}`);
+    writeJsonAtomic(planPath(repo, plan.task.id), { ...plan, claims: { ...claims, [d]: repo.root } });
+  }, 30);
 }
 
 /**
@@ -126,11 +128,11 @@ export function deactivate(cwd) {
 }
 
 /** Run the gate for the active task, or configuration-only checks when none is active. */
-export function verify(cwd, { role = 'build' } = {}) {
+export function verify(cwd, { role = 'build', nodeViolations = [] } = {}) {
   const repo = requireRepo(cwd);
   const active = getActive(repo);
   const config = active ? active.config : loadConfig(repo);
-  const result = runGate({ repo, config, active, role, attempts: active?.attempts ?? 0 });
+  const result = runGate({ repo, config, active, role, attempts: active?.attempts ?? 0, nodeViolations });
   if (active) {
     updateActive(repo, active.activation, (cur) => ({
       attempts: result.passed ? 0 : cur.attempts, // an explicit pass clears a spent Stop budget
@@ -242,7 +244,7 @@ function validatePlan(plan, config, repo) {
   for (const [id, ds] of deps) for (const d of ds) if (!deps.has(d)) e.push(`${id}: unknown dependency "${d}"`);
   const reaches = (from, to, seen = new Set()) => from === to || (!seen.has(from) && seen.add(from) && (deps.get(from) ?? []).some((d) => reaches(d, to, seen)));
   for (const id of deps.keys()) if ((deps.get(id) ?? []).some((d) => reaches(d, id))) e.push(`${id}: dependency cycle`);
-  const overlap = (a, b) => a.some((x) => b.some((y) => covers(x, y) || covers(y, x)));
+  const overlap = (a, b) => a.some((x) => b.some((y) => patternsOverlap(x, y)));
   for (let i = 0; i < plan.nodes.length; i += 1) {
     for (let j = i + 1; j < plan.nodes.length; j += 1) {
       const [a, b] = [plan.nodes[i].task, plan.nodes[j].task];
@@ -290,6 +292,20 @@ function topological(plan) {
   return done;
 }
 
+function loadConfigAtCommit(repo, commit) {
+  const raw = git(repo.root, 'show', `${commit}:factory.json`);
+  if (raw.code !== 0) fail(`factory.json does not exist at commit ${commit.slice(0, 12)}`);
+  let cfg;
+  try {
+    cfg = JSON.parse(raw.stdout);
+  } catch (e) {
+    fail(`factory.json at ${commit.slice(0, 12)} is not valid JSON: ${e.message}`);
+  }
+  const errors = validateConfig(cfg);
+  if (errors.length > 0) fail(`factory.json at ${commit.slice(0, 12)} is invalid:\n  - ${errors.join('\n  - ')}`);
+  return cfg;
+}
+
 /**
  * Merge builder branches in dependency order into a retained integration
  * worktree and gate the combined candidate there. Never touches the branch
@@ -302,10 +318,30 @@ export function integrate(cwd, planId, branches) {
   const missing = order.filter((id) => !branches[id]);
   if (missing.length > 0) fail(`no branch given for: ${missing.join(', ')} (pass --branch <task-id>=<ref>)`);
   const base = gitOut(repo.root, 'rev-parse', '--verify', `${plan.task.base_ref}^{commit}`);
+  const baseConfig = loadConfigAtCommit(repo, base);
+  const guarded = protectedPaths(baseConfig);
+  const resolved = {};
+  const nodeViolations = [];
   for (const id of order) {
-    const ahead = git(repo.root, 'rev-list', '--count', `${base}..${branches[id]}`);
-    if (ahead.code !== 0) fail(`branch ${branches[id]} for ${id} does not exist`);
-    if (ahead.stdout.trim() === '0') fail(`branch ${branches[id]} for ${id} has no commits beyond the base: that builder delivered nothing`);
+    const ref = branches[id];
+    if (typeof ref !== 'string' || !ref || ref.startsWith('-')) fail(`invalid branch ref "${ref}" for ${id}`);
+    const rev = git(repo.root, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`);
+    if (rev.code !== 0) fail(`branch ${ref} for ${id} does not exist`);
+    const commit = rev.stdout.trim();
+    resolved[id] = commit;
+    if (git(repo.root, 'merge-base', '--is-ancestor', base, commit).code !== 0) {
+      fail(`branch ${ref} for ${id} is not descended from the approved base ${base.slice(0, 12)}`);
+    }
+    const ahead = git(repo.root, 'rev-list', '--count', `${base}..${commit}`);
+    if (ahead.code !== 0) fail(`branch ${ref} for ${id} does not exist`);
+    if (ahead.stdout.trim() === '0') fail(`branch ${ref} for ${id} has no commits beyond the base: that builder delivered nothing`);
+    const node = plan.nodes.find((n) => n.task.id === id);
+    const diff = gitOut(repo.root, 'diff', '--name-only', '--no-renames', '-z', base, commit, '--').split('\0').filter(Boolean);
+    for (const p of diff) {
+      if (!coveredBy(guarded, p) && !coveredBy(node.task.allowed_paths, p)) {
+        nodeViolations.push(`${id}: ${p} (outside node allowed_paths)`);
+      }
+    }
   }
   const stamp = Date.now().toString(36);
   const branch = `factory/integration/${planId}-${stamp}`;
@@ -314,13 +350,14 @@ export function integrate(cwd, planId, branches) {
   // Freeze the task and configuration from the clean base, before any builder's code arrives.
   activate(tree, path.join(repo.state, 'plans', planId, `${planId}.json`), { approved: true, integration: true });
   for (const id of order) {
-    const m = git(tree, 'merge', '--no-ff', '--no-edit', '-m', `factory: integrate ${id}`, branches[id]);
+    const m = git(tree, 'merge', '--no-ff', '--no-edit', '-m', `factory: integrate ${id}`, resolved[id]);
     if (m.code !== 0) {
       git(tree, 'merge', '--abort');
+      clearActive(repoInfo(tree));
       fail(`merging ${id} (${branches[id]}) conflicted; resolve it with the owner. Integration worktree retained at ${tree}\n${tail(m.stdout + m.stderr, 10)}`);
     }
   }
-  const result = verify(tree);
+  const result = verify(tree, { nodeViolations });
   return { worktree: tree, branch, result };
 }
 
@@ -330,12 +367,13 @@ export function integrate(cwd, planId, branches) {
  */
 export function managedRun(cwd, taskFile, acceptanceFile) {
   const repo = requireRepo(cwd);
-  const config = loadConfig(repo);
+  const liveConfig = loadConfig(repo);
   const task = readJson(path.resolve(cwd, taskFile));
-  const { errors, base } = validateTaskInRepo(task, config, repo);
+  const { errors, base } = validateTaskInRepo(task, liveConfig, repo);
   if (errors.length > 0) fail(`task is not ready:\n  - ${errors.join('\n  - ')}`);
   if (!acceptanceFile) fail('an acceptance record is required: factory run <task> --acceptance <record>');
-  const problems = validateAcceptance(readJson(path.resolve(cwd, acceptanceFile)), task, base, config);
+  const baseConfig = loadConfigAtCommit(repo, base);
+  const problems = validateAcceptance(readJson(path.resolve(cwd, acceptanceFile)), task, base, baseConfig);
   if (problems.length > 0) fail(`acceptance record is not ready:\n  - ${problems.join('\n  - ')}`);
   const stamp = Date.now().toString(36);
   const branch = `factory/${task.id}-${stamp}`;
@@ -346,12 +384,23 @@ export function managedRun(cwd, taskFile, acceptanceFile) {
   const record = activate(tree, frozen, { controller: true, acceptance: acceptanceFile && path.resolve(cwd, acceptanceFile) });
   const wt = repoInfo(tree);
   const limit = record.config.limits?.attempts ?? 3;
+  const runLimit = record.config.limits?.run_seconds;
+  const runDeadline = runLimit ? Date.now() + runLimit * 1000 : Infinity;
   const bin = process.env.CLAUDE_FACTORY_CLAUDE_BIN ?? 'claude';
   const extra = (process.env.CLAUDE_FACTORY_CLAUDE_ARGS ?? '--permission-mode acceptEdits').split(/\s+/).filter(Boolean);
   let feedback = '';
   let result = null;
   let cost = 0;
-  for (let attempt = 1; attempt <= limit; attempt += 1) {
+  let attempts = 0;
+  let envFailures = 0;
+  for (;;) {
+    const remaining = Math.floor((runDeadline - Date.now()) / 1000);
+    if (remaining <= 0) {
+      if (!result) fail(`run_seconds (${runLimit}s) expired before an attempt completed; worktree retained at ${tree}`);
+      break;
+    }
+    const agentTimeout = Math.min(record.config.limits?.agent_seconds ?? 1200, remaining);
+    const nextAttempt = attempts + 1;
     const prompt = [
       `Implement factory task "${task.id}": ${task.title}`,
       '', task.specification, '',
@@ -361,20 +410,30 @@ export function managedRun(cwd, taskFile, acceptanceFile) {
       feedback && `\nThe previous attempt failed the gate. Fix the cause, not the checks:\n${feedback}`,
     ].filter(Boolean).join('\n');
     const r = sh(bin, ['-p', '--output-format', 'json', ...extra], {
-      cwd: tree, input: prompt, timeout: record.config.limits?.agent_seconds ?? 1200,
+      cwd: tree, input: prompt, timeout: agentTimeout,
       env: { ...process.env, CLAUDE_FACTORY_MANAGED: '1' },
     });
     fs.mkdirSync(path.join(wt.state, 'managed'), { recursive: true });
-    fs.writeFileSync(path.join(wt.state, 'managed', `${task.id}-${stamp}-attempt-${attempt}.log`), bounded(`${r.stdout}\n${r.stderr}`));
+    fs.writeFileSync(path.join(wt.state, 'managed', `${task.id}-${stamp}-attempt-${nextAttempt}-run-${attempts + envFailures + 1}.log`), bounded(`${r.stdout}\n${r.stderr}`));
     if (r.missing) fail(`${bin} was not found; install Claude Code or set CLAUDE_FACTORY_CLAUDE_BIN`);
     try {
       cost += JSON.parse(r.stdout).total_cost_usd ?? 0;
     } catch {
       // non-JSON output is kept in the attempt log
     }
-    if (!updateActive(wt, record.activation, () => ({ attempts: attempt }))) fail(`the task was deactivated during the run; worktree retained at ${tree}`);
+    if (!updateActive(wt, record.activation, () => ({ attempts: nextAttempt, environmental: envFailures }))) {
+      fail(`the task was deactivated during the run; worktree retained at ${tree}`);
+    }
     result = verify(tree);
     if (result.passed || result.status === 'blocked' || result.status === 'pending') break;
+    if (result.environmental) {
+      envFailures += 1;
+      updateActive(wt, record.activation, () => ({ attempts, environmental: envFailures }));
+      if (envFailures >= limit) break;
+    } else {
+      attempts = nextAttempt;
+      if (attempts >= limit) break;
+    }
     feedback = summarize(result);
   }
   return { worktree: tree, branch, result, cost_usd: cost || null };

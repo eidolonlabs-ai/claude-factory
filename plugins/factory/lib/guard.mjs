@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { analyze } from './shell.mjs';
-import { classifyWrite, relativeTo, covers, CONTROL_FILES, CONTROL_PREFIXES } from './policy.mjs';
+import { classifyWrite, relativeTo, covers, patternsOverlap, CONTROL_FILES, CONTROL_PREFIXES, HOLDOUT_MARKERS } from './policy.mjs';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const HOME = /^(~|\$HOME|\$\{HOME\})(\/|$)/;
@@ -15,6 +15,21 @@ function guardedNames(ctx) {
     ...(ctx.frozen ?? []),
     ...(ctx.task ? ctx.protected ?? [] : []),
   ];
+}
+
+function globHitsHoldout(rel, markers = HOLDOUT_MARKERS) {
+  const low = rel.toLowerCase();
+  const segs = low.split('/');
+  for (const m of markers) {
+    const lm = m.toLowerCase();
+    if (lm.endsWith('/')) {
+      const stem = lm.slice(0, -1);
+      if (segs.some((s) => covers(s, stem))) return stem;
+    } else if (segs.some((s) => (s.includes('holdout') || s.includes('[')) && covers(s, `a${lm}b`))) {
+      return lm;
+    }
+  }
+  return null;
 }
 
 /**
@@ -38,8 +53,11 @@ function checkPath(target, call, w = {}) {
     return w.dir ? 'the repository root holds factory controls' : null;
   }
   if (/[*?[]/.test(rel)) {
-    const hit = guardedNames(ctx).find((name) => covers(rel, name));
+    const lowRel = rel.toLowerCase();
+    const hit = guardedNames(ctx).find((name) => patternsOverlap(lowRel, name.toLowerCase()));
     if (hit) return `the pattern ${rel} can match ${hit}`;
+    const holdout = globHitsHoldout(rel, ctx.holdoutMarkers);
+    if (holdout) return `the pattern ${rel} can match holdout ${holdout}`;
   }
   return classifyWrite(rel, ctx, Boolean(w.dir));
 }

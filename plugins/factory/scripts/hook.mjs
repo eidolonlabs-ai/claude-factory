@@ -30,8 +30,19 @@ function existingDir(p) {
 }
 
 /** Canonical form of a path that may not exist yet, so symlinked prefixes compare equal. */
-function canonical(p) {
+function canonical(p, seen = new Set()) {
+  if (seen.has(p) || seen.size > 32) return p;
   if (fs.existsSync(p)) return fs.realpathSync(p); // also resolves a symlinked file to what it edits
+  try {
+    if (fs.lstatSync(p).isSymbolicLink()) {
+      const nextSeen = new Set(seen);
+      nextSeen.add(p);
+      const parent = canonical(path.dirname(p), nextSeen);
+      return canonical(path.resolve(parent, fs.readlinkSync(p)), nextSeen);
+    }
+  } catch {
+    // does not exist yet: canonicalize deepest existing ancestor
+  }
   const dir = existingDir(p);
   if (!dir) return p;
   const real = fs.realpathSync(dir);
@@ -50,6 +61,79 @@ function adopted(where) {
     if (at > 0) repo = repoInfo(parts.slice(0, at).join(path.sep));
   }
   return repo && isAdopted(repo) ? repo : null;
+}
+
+function worktreesFor(repo) {
+  const r = git(repo.root, 'worktree', 'list', '--porcelain');
+  if (r.code !== 0) return [];
+  return r.stdout
+    .split('\n')
+    .filter((l) => l.startsWith('worktree '))
+    .map((l) => l.slice(9).trim())
+    .filter(Boolean);
+}
+
+function resolveStopRepo(input) {
+  const explicit = input.worktree_path ?? input.worktree ?? input.subagent_cwd;
+  if (explicit) {
+    const r = adopted(canonical(explicit));
+    if (r) return r;
+  }
+  const cwdRepo = adopted(canonical(input.cwd ?? process.cwd()));
+  if (!cwdRepo) return null;
+  if (input.hook_event_name !== 'SubagentStop') return cwdRepo;
+
+  if (input.agent_id) {
+    const id = String(input.agent_id);
+    for (const wt of worktreesFor(cwdRepo)) {
+      const base = path.basename(wt);
+      if (base === id || base === `agent-${id}` || base.endsWith(`-${id}`)) {
+        const r = adopted(canonical(wt));
+        if (r) return r;
+      }
+    }
+  }
+
+  if (input.agent_transcript_path && fs.existsSync(input.agent_transcript_path)) {
+    try {
+      const lines = fs.readFileSync(input.agent_transcript_path, 'utf8').split('\n').filter(Boolean);
+      for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
+        try {
+          const rec = JSON.parse(lines[idx]);
+          if (typeof rec?.cwd === 'string') {
+            const r = adopted(canonical(rec.cwd));
+            if (r && r.root !== cwdRepo.root) return r;
+          }
+        } catch {
+          // ignore malformed line
+        }
+      }
+    } catch {
+      // ignore unreadable transcript
+    }
+  }
+
+  // If the parent cwd itself has no active file, fall back to a unique active plan worktree.
+  const cwdActiveFile = path.join(cwdRepo.state, 'active', `${cwdRepo.key}.json`);
+  if (!fs.existsSync(cwdActiveFile)) {
+    const activeDir = path.join(cwdRepo.state, 'active');
+    if (fs.existsSync(activeDir)) {
+      const candidates = [];
+      for (const f of fs.readdirSync(activeDir).filter((x) => x.endsWith('.json'))) {
+        try {
+          const rec = JSON.parse(fs.readFileSync(path.join(activeDir, f), 'utf8'));
+          if (rec?.approval === 'plan' && typeof rec.worktree === 'string' && fs.existsSync(rec.worktree)) {
+            const r = adopted(canonical(rec.worktree));
+            if (r) candidates.push(r);
+          }
+        } catch {
+          // ignore unreadable sibling record here
+        }
+      }
+      if (candidates.length === 1) return candidates[0];
+    }
+  }
+  return cwdRepo;
 }
 
 function guardContext(repo) {
@@ -71,18 +155,29 @@ function preToolUse(input) {
   // worktree subagent is not necessarily the session's directory.
   const repo = adopted(target ?? cwd) ?? (target ? adopted(cwd) : null);
   if (!repo) return;
-  const unattended = managed() || process.env.CLAUDE_FACTORY_UNATTENDED === '1' || UNATTENDED_MODES.has(input.permission_mode);
-  const toolInput = target ? { ...input.tool_input, file_path: target, notebook_path: undefined } : input.tool_input;
-  const verdict = decide({ tool: input.tool_name, input: toolInput, root: repo.root, cwd, gitCommon: repo.common, ctx: guardContext(repo), unattended });
-  if (verdict.decision === 'allow') return;
-  logEvent(repo, { event: 'guard', decision: verdict.decision, tool: input.tool_name, reason: verdict.reason });
-  out({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: verdict.decision,
-      permissionDecisionReason: `Claude Factory: ${verdict.reason}`,
-    },
-  });
+  try {
+    const unattended = managed() || process.env.CLAUDE_FACTORY_UNATTENDED === '1' || UNATTENDED_MODES.has(input.permission_mode);
+    const toolInput = target ? { ...input.tool_input, file_path: target, notebook_path: undefined } : input.tool_input;
+    const verdict = decide({ tool: input.tool_name, input: toolInput, root: repo.root, cwd, gitCommon: repo.common, ctx: guardContext(repo), unattended });
+    if (verdict.decision === 'allow') return;
+    logEvent(repo, { event: 'guard', decision: verdict.decision, tool: input.tool_name, reason: verdict.reason });
+    out({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: verdict.decision,
+        permissionDecisionReason: `Claude Factory: ${verdict.reason}`,
+      },
+    });
+  } catch (e) {
+    logEvent(repo, { event: 'guard-error', tool: input.tool_name, error: e.message });
+    out({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `Claude Factory: active task state or guard failed (${e.message}); repair or deactivate before editing`,
+      },
+    });
+  }
 }
 
 function sessionStart(input) {
@@ -112,15 +207,15 @@ function blockedMessage(active, why) {
 
 /** Stop and SubagentStop: verify the candidate before the turn may end. */
 function stop(input) {
-  const repo = adopted(canonical(input.cwd ?? process.cwd()));
+  const repo = resolveStopRepo(input);
   if (!repo || managed()) return; // a managed run's controller gates outside the session
-  const active = getActive(repo);
-  // The audit shows which checkout each stop event was dispatched for.
-  logEvent(repo, { event: 'stop-hook', hook: input.hook_event_name, agent: input.agent_type ?? null, task: active?.task.id ?? null });
-  if (!active) return;
-  const limit = active.config.limits?.attempts ?? 3;
-  const bump = (field) => updateActive(repo, active.activation, (cur) => ({ [field]: (cur[field] ?? 0) + 1 }));
+  let active = null;
   try {
+    active = getActive(repo);
+    // The audit shows which checkout each stop event was dispatched for.
+    logEvent(repo, { event: 'stop-hook', hook: input.hook_event_name, agent: input.agent_type ?? null, task: active?.task.id ?? null });
+    if (!active) return;
+    const limit = active.config.limits?.attempts ?? 3;
     const candidate = candidateHash(repo.root);
     if (active.last?.candidate === candidate && active.last.passed) return;
     const awaiting = () => out({ systemMessage: `Claude Factory: automated checks passed for ${active.task.id}. Acceptance now waits for the owner's manual observation on this candidate: run /factory:status.` });
@@ -153,8 +248,13 @@ function stop(input) {
     out({ decision: 'block', reason: `${summarize(result)}\n\n${guidance}\nAttempt ${next[field]} of ${limit}.` });
   } catch (e) {
     // A gate that could not run verified nothing: never let that end the turn silently.
-    logEvent(repo, { event: 'stop-error', task: active.task.id, error: e.message });
-    const next = bump('environmental');
+    logEvent(repo, { event: 'stop-error', task: active?.task?.id ?? null, error: e.message });
+    if (!active) {
+      out({ decision: 'block', reason: `Claude Factory: active task state could not be read, so this candidate is unverified (${e.message}). Fix or clear .git/factory/active/ before stopping.` });
+      return;
+    }
+    const limit = active.config.limits?.attempts ?? 3;
+    const next = updateActive(repo, active.activation, (cur) => ({ environmental: (cur.environmental ?? 0) + 1 }));
     if (!next) return;
     if (next.environmental > limit) out(blockedMessage(active, `the gate could not run (${e.message})`));
     else out({ decision: 'block', reason: `Claude Factory: the gate could not run, so this candidate is unverified.\n${e.message}\nDo not change code for this. Stop again to retry; if it repeats, tell the owner.\nAttempt ${next.environmental} of ${limit}.` });

@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { covers, classifyWrite, relativeTo, isHoldout } from '../plugins/factory/lib/policy.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { covers, patternsOverlap, classifyWrite, relativeTo, isHoldout } from '../plugins/factory/lib/policy.mjs';
 import { decide } from '../plugins/factory/lib/guard.mjs';
 import { analyze } from '../plugins/factory/lib/shell.mjs';
 import { validateConfig, validateTask } from '../plugins/factory/lib/config.mjs';
-import { lintModel, isForeign } from '../plugins/factory/lib/compose.mjs';
+import { lintModel, isForeign, runCompose } from '../plugins/factory/lib/compose.mjs';
 
 const task = { id: 't', allowed_paths: ['src/title.mjs', 'src/lib'] };
 const ctx = { task, protected: ['acceptance', 'compose.yaml', 'factory.json'], editable: ['src'] };
@@ -118,4 +121,85 @@ test('parallel gates do not count each other as foreign containers', () => {
   assert.equal(isForeign('chronograph-claude-preview', 'factory-20261118xyz'), false);
   assert.equal(isForeign('chronograph', 'factory-20261118xyz'), true);
   assert.equal(isForeign('', 'factory-20261118xyz'), true);
+});
+
+test('patternsOverlap catches symmetric globs and character classes', () => {
+  assert.ok(patternsOverlap('src/*.mjs', 'src/title.*'));
+  assert.ok(patternsOverlap('src/**/*.mjs', 'src/sub/a.*'));
+  assert.ok(!patternsOverlap('src/*.mjs', 'src/*.py'));
+  assert.ok(!patternsOverlap('src/[a]*.mjs', 'src/[b]*.mjs'));
+  assert.ok(covers('tests/[h]oldout', 'tests/holdout'));
+});
+
+test('config validation enforces nested keys, limits, and safe compose.files', () => {
+  const good = { schema_version: 3, checks: [], policy: { editable_paths: ['src'], protected_paths: ['acceptance'] }, compose: { files: ['compose.yaml'], services: ['app'], test_service: 'e2e' } };
+  assert.ok(validateConfig({ ...good, limits: { agent_seconds: -5 } }).some((e) => e.includes('agent_seconds')));
+  assert.ok(validateConfig({ ...good, limits: { run_seconds: '60' } }).some((e) => e.includes('run_seconds')));
+  assert.ok(validateConfig({ ...good, limits: { extra: 1 } }).some((e) => e.includes('unknown field')));
+  assert.ok(validateConfig({ ...good, policy: { ...good.policy, extra: 1 } }).some((e) => e.includes('unknown field')));
+  assert.ok(validateConfig({ ...good, compose: { ...good.compose, files: ['../evil.yaml'] } }).some((e) => e.includes('compose.files')));
+});
+
+test('compose lint rejects container namespaces, devices, volumes_from, and symlinked bind mounts', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'compose-lint-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'src'));
+  fs.symlinkSync('/etc', path.join(root, 'src/escape'));
+  const bad = {
+    services: {
+      app: {
+        network_mode: 'container:other',
+        uts: 'host',
+        cgroup: 'host',
+        userns_mode: 'host',
+        devices: [{ source: '/dev/null', target: '/dev/null' }],
+        volumes_from: ['other'],
+        volumes: [{ type: 'bind', source: path.join(root, 'src/escape') }],
+        healthcheck: { test: ['CMD', 'true'] },
+      },
+      e2e: {},
+    },
+  };
+  const problems = lintModel(bad, root, ['app', 'e2e']);
+  for (const needle of ['network_mode', 'uts', 'cgroup', 'userns_mode', 'host devices', 'volumes_from', 'outside the project']) {
+    assert.ok(problems.some((p) => p.includes(needle)), `expected problem mentioning ${needle}, got: ${problems.join('; ')}`);
+  }
+});
+
+test('runCompose passes --profile * on down and fails cleanup when foreign container tracking fails', (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-docker-'));
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-rundir-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-root-'));
+  t.after(() => {
+    fs.rmSync(bin, { recursive: true, force: true });
+    fs.rmSync(runDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const logFile = path.join(runDir, 'docker-calls.log');
+  const fakeDocker = path.join(bin, 'docker');
+  fs.writeFileSync(fakeDocker, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'compose' && args[1] === 'version') { console.log('2.20.0'); process.exit(0); }
+if (args[0] === 'info') { console.log('26.0.0'); process.exit(0); }
+if (args[0] === 'ps' && args.includes('--no-trunc')) { process.stderr.write('daemon hiccup'); process.exit(1); }
+if (args[0] === 'ps' && args.includes('-aq')) { process.exit(0); }
+if (args.includes('config')) { console.log(JSON.stringify({ services: { app: { healthcheck: { test: ['CMD', 'true'] } }, e2e: {} } })); process.exit(0); }
+process.exit(0);
+`);
+  fs.chmodSync(fakeDocker, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  try {
+    const checks = runCompose({ root, compose: { files: ['compose.yaml'], services: ['app'], test_service: 'e2e', timeout_seconds: 30 }, runDir, id: 'test-run' });
+    const cleanup = checks.find((c) => c.id === 'compose:cleanup');
+    assert.equal(cleanup.status, 'FAIL');
+    assert.equal(cleanup.environmental, true);
+    const calls = fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const downCall = calls.find((c) => c.includes('down'));
+    assert.ok(downCall && downCall.includes('--profile') && downCall.includes('*'), 'down uses --profile *');
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });

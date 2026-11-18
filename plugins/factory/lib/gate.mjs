@@ -10,7 +10,7 @@ import { pendingManual, checkId } from './acceptance.mjs';
 
 const check = (id, status, summary, extra = {}) => ({ id, status, summary, ...extra });
 
-function scopeCheck(repo, active, config) {
+function scopeCheck(repo, active, config, nodeViolations = []) {
   if (!active) return check('scope', 'NOT_RUN', 'no active task: scope was not checked');
   const changed = changedPaths(repo.root, active.base);
   const hidden = integrityProblems(repo.root, active.base, protectedPaths(config));
@@ -20,7 +20,10 @@ function scopeCheck(repo, active, config) {
   }
   const outside = changed.filter((p) => !coveredBy(active.task.allowed_paths, p) || !coveredBy(config.policy.editable_paths, p));
   const links = symlinkedPaths(repo.root, changed);
-  if (outside.length > 0) return check('scope', 'FAIL', `${outside.length} changed path(s) outside the task's allowed paths`, { details: outside });
+  if (outside.length > 0 || nodeViolations.length > 0) {
+    const details = [...outside, ...nodeViolations];
+    return check('scope', 'FAIL', `${details.length} changed path(s) outside the task's allowed paths`, { details });
+  }
   if (links.length > 0) return check('scope', 'FAIL', 'changed paths traverse symlinks', { details: links });
   return check('scope', 'PASS', `${changed.length} changed path(s), all within scope`);
 }
@@ -97,7 +100,7 @@ function auditCheck(repo, base) {
  *   `deadlineSeconds` bounds everything except teardown, so a hook with a
  *   timeout is never killed with a stack still running.
  */
-export function runGate({ repo, config, active = null, role = 'build', attempts = 0, deadlineSeconds = Infinity, lockWaitSeconds = 0 }) {
+export function runGate({ repo, config, active = null, role = 'build', attempts = 0, deadlineSeconds = Infinity, lockWaitSeconds = 0, nodeViolations = [] }) {
   return withLock(repo, () => {
     const deadline = Date.now() + deadlineSeconds * 1000;
     // Seconds a step may use: its own limit, capped by what is left overall.
@@ -118,7 +121,7 @@ export function runGate({ repo, config, active = null, role = 'build', attempts 
       if (produced.some((c) => c.status === 'FAIL')) stopped = true;
     };
 
-    step(['scope'], () => scopeCheck(repo, active, config));
+    step(['scope'], () => scopeCheck(repo, active, config, nodeViolations));
     step(['frozen'], () => frozenCheck(repo, active));
     step(['hygiene'], () => hygieneCheck(repo));
     step(['compose:e2e'], () => {
