@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-harness",
+  "description": "Local development harness for Claude Code: scoped tasks, hook guards and a Docker Compose acceptance gate.",
+  "owner": {
+    "name": "theRealMarkCastillo"
+  },
+  "plugins": [
+    {
+      "name": "harness",
+      "source": "./plugins/harness",
+      "description": "Scoped tasks, hook guards and a real Docker Compose acceptance gate for Claude Code, with fresh-context review and parallel worktree builders.",
+      "category": "development"
+    }
+  ]
+}

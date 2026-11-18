@@ -4,7 +4,7 @@
   "title": "Normalize note titles before saving",
   "specification": "Trim surrounding whitespace before saving a title. Reject whitespace-only titles.",
   "base_ref": "<approved Git commit>",
-  "allowed_paths": ["src/title.js"],
+  "allowed_paths": ["src/title.mjs"],
   "acceptance_criteria": [
     "A padded title is stored trimmed and displayed after reloading the page.",
     "A whitespace-only title is rejected and no note is created."

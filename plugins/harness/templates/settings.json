@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Edit(./.env)",
+      "Edit(./harness.json)",
+      "Edit(./compose.yaml)",
+      "Edit(./acceptance/**)",
+      "Bash(git push:*)"
+    ]
+  }
+}

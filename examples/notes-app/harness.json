@@ -1,0 +1,17 @@
+{
+  "schema_version": 3,
+  "checks": [
+    { "name": "syntax", "argv": ["node", "--check", "src/server.mjs"], "timeout_seconds": 60 }
+  ],
+  "policy": {
+    "editable_paths": ["src"],
+    "protected_paths": ["acceptance", "Dockerfile"]
+  },
+  "compose": {
+    "files": ["compose.yaml"],
+    "services": ["app"],
+    "test_service": "e2e",
+    "timeout_seconds": 300
+  },
+  "limits": { "attempts": 3 }
+}

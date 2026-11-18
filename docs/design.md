@@ -10,6 +10,20 @@ Start with a solo developer using Claude Code locally. The developer approves th
 | Review and orchestration | A fresh reviewer inspects the verified candidate. Parallel builders own separate worktrees, and the integrated candidate receives a fresh gate. |
 | Distribution | A versioned Claude Code plugin installs from the repo and is verified in a fresh session. |
 
-Use the [harness family contract](https://github.com/theRealMarkCastillo/hermes-harness/blob/main/CONTRACT.md) for design alignment. Keep verification in executable checks and treat the developer's permission model as the enforcement boundary. Separate verifier access is required for tests a builder must not be able to read or edit.
+## Status
+
+Version 0.1.0 implements each milestone in the `harness` plugin under [plugins/harness](../plugins/harness).
+
+| Milestone | Where | Evidence |
+| --- | --- | --- |
+| Intake | `/harness:intake`, `harness-architect`, `harness check-task` | Task validation tests |
+| Verification | `harness verify` ([workflow](workflow.md)) | `tests/docker-e2e.test.mjs`, `scripts/demo.sh` |
+| Hooks | `hooks/hooks.json`, `scripts/hook.mjs` ([hooks](hooks.md)) | `scripts/demo.sh`, family guard cases |
+| Review and orchestration | `/harness:review`, `/harness:orchestrate`, `harness integrate`, `harness run` | `tests/docker-e2e.test.mjs` |
+| Distribution | `.claude-plugin/marketplace.json` ([plugin](plugin.md)) | `claude plugin validate --strict` |
+
+Known gaps against the family contract: holdouts are not implemented (the step reports `NOT_RUN`), there is no per-criterion acceptance record or recorded manual evidence, the demo's end-to-end test drives HTTP and not a browser, and the reviewer is a fresh context from the same vendor.
+
+Use the [harness family contract](../CONTRACT.md) for design alignment. Keep verification in executable checks and treat the developer's permission model as the enforcement boundary. Separate verifier access is required for tests a builder must not be able to read or edit.
 
 [Claude Code hooks](https://code.claude.com/docs/en/hooks) · [Claude Code plugins](https://code.claude.com/docs/en/plugins)
