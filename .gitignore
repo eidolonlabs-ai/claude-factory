@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 .claude/settings.local.json
-.harness/runs/
+.factory/runs/
 node_modules/
 .claude/worktrees/
 tasks/drafts/

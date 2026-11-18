@@ -1,0 +1,20 @@
+{
+  "name": "factory",
+  "version": "0.1.0",
+  "description": "Scoped tasks, hook guards and a real Docker Compose acceptance gate for Claude Code, with fresh-context review and parallel worktree builders.",
+  "author": {
+    "name": "eidolonlabs-ai",
+    "url": "https://github.com/eidolonlabs-ai"
+  },
+  "homepage": "https://github.com/eidolonlabs-ai/claude-factory",
+  "repository": "https://github.com/eidolonlabs-ai/claude-factory",
+  "license": "MIT",
+  "keywords": [
+    "factory",
+    "verification",
+    "hooks",
+    "docker-compose",
+    "worktrees",
+    "review"
+  ]
+}

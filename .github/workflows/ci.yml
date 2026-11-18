@@ -16,6 +16,6 @@ jobs:
       - name: Unit tests and family guard cases
         run: npm test
       - name: Real Compose stack tests
-        run: HARNESS_E2E=1 node --test tests/docker-e2e.test.mjs
+        run: FACTORY_E2E=1 node --test tests/docker-e2e.test.mjs
       - name: Hook demo on a disposable project
         run: bash scripts/demo.sh

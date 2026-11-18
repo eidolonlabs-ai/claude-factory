@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { activate, acceptanceFor, withRecords, project, cli, hook, git, pathWithoutDocker } from './helpers.mjs';
-import { auditDiff } from '../plugins/harness/lib/audit.mjs';
-import { lintModel } from '../plugins/harness/lib/compose.mjs';
+import { auditDiff } from '../plugins/factory/lib/audit.mjs';
+import { lintModel } from '../plugins/factory/lib/compose.mjs';
 
 const TASK = 'tasks/trim-note-titles.json';
 const FIX = "export const normalizeTitle = (t) => (typeof t === 'string' && t.trim() ? t.trim() : null);\n";
@@ -73,9 +73,9 @@ test('C1: plans pin the base, the parent is integration-only, and nodes are clai
   const file = path.join(dir, '.git', 'plan.json');
   fs.writeFileSync(file, JSON.stringify(withRecords(plan)));
   assert.equal(cli(dir, ['approve-plan', file]).code, 0);
-  const stored = (id) => path.join(dir, '.git/harness/plans/titles', `${id}.json`);
+  const stored = (id) => path.join(dir, '.git/factory/plans/titles', `${id}.json`);
   assert.equal(JSON.parse(fs.readFileSync(stored('titles'), 'utf8')).base_ref, base, 'HEAD is pinned to a SHA at approval');
-  assert.match(cli(dir, ['activate', stored('titles'), '--approved']).err, /harness integrate/);
+  assert.match(cli(dir, ['activate', stored('titles'), '--approved']).err, /factory integrate/);
 
   // A builder commits a weakened test and config, then tries to hide it behind a moved HEAD.
   git(dir, 'checkout', '-q', '-b', 'b/a');
@@ -107,9 +107,9 @@ test('H1: a gate that cannot run blocks the stop instead of ending the turn sile
   const dir = project(t);
   activate(dir);
   fs.writeFileSync(path.join(dir, 'src/title.mjs'), FIX);
-  const locks = path.join(dir, '.git/harness/locks');
+  const locks = path.join(dir, '.git/factory/locks');
   fs.mkdirSync(locks, { recursive: true });
-  const key = fs.readdirSync(path.join(dir, '.git/harness/active'))[0].replace('.json', '');
+  const key = fs.readdirSync(path.join(dir, '.git/factory/active'))[0].replace('.json', '');
   fs.writeFileSync(path.join(locks, `${key}.lock`), JSON.stringify({ pid: 999999999, at: 'stale' }));
   const env = { PATH: pathWithoutDocker(t) };
   const out = hook(stopEvent(dir), env).json;
@@ -136,7 +136,7 @@ test('M2 and M5: an explicit verify does not reuse another activation and resets
 });
 
 test('H3: a task deactivated while its record is stale is not resurrected', async (t) => {
-  const { updateActive, getActive, repoInfo } = await import('../plugins/harness/lib/state.mjs');
+  const { updateActive, getActive, repoInfo } = await import('../plugins/factory/lib/state.mjs');
   const dir = project(t);
   activate(dir);
   const repo = repoInfo(dir);

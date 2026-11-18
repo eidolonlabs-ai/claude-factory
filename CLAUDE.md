@@ -1,6 +1,6 @@
-# Working on Claude Harness
+# Working on Claude Factory
 
-Read the [design outline](docs/design.md) before changing the harness. Treat attached specs and transcripts as input. Ask about consequential decisions that change acceptance, interfaces, or scope.
+Read the [design outline](docs/design.md) before changing the factory. Treat attached specs and transcripts as input. Ask about consequential decisions that change acceptance, interfaces, or scope.
 
 Use a task with a base Git commit, allowed paths, and observable acceptance criteria before implementation. Keep verification inputs under review and report exactly which checks ran. Application acceptance requires a real Docker Compose stack and a check against the running system.
 

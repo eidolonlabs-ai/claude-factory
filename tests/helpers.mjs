@@ -3,11 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { draftAcceptance } from '../plugins/harness/lib/acceptance.mjs';
+import { draftAcceptance } from '../plugins/factory/lib/acceptance.mjs';
 
 export const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-export const PLUGIN = path.join(REPO, 'plugins', 'harness');
-export const CLI = path.join(PLUGIN, 'scripts', 'harness.mjs');
+export const PLUGIN = path.join(REPO, 'plugins', 'factory');
+export const CLI = path.join(PLUGIN, 'scripts', 'factory.mjs');
 export const HOOK = path.join(PLUGIN, 'scripts', 'hook.mjs');
 
 const GIT = ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid'];
@@ -15,10 +15,10 @@ export const git = (cwd, ...args) => spawnSync('git', [...GIT, ...args], { cwd, 
 
 /** A committed copy of the notes demo app in a temporary directory. */
 export function project(t, { adopt = true } = {}) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-test-')));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'factory-test-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.cpSync(path.join(REPO, 'examples', 'notes-app'), dir, { recursive: true });
-  if (!adopt) fs.rmSync(path.join(dir, 'harness.json'));
+  if (!adopt) fs.rmSync(path.join(dir, 'factory.json'));
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'add', '-A');
   git(dir, 'commit', '-q', '-m', 'baseline');
@@ -37,7 +37,7 @@ export function hook(event, env = {}) {
 
 /** A PATH with git and node but no docker, to exercise NOT_RUN handling. */
 export function pathWithoutDocker(t) {
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-bin-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-bin-'));
   t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
   for (const tool of ['git', 'node']) {
     const found = spawnSync('which', [tool], { encoding: 'utf8' }).stdout.trim();

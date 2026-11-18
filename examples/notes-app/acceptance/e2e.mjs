@@ -10,12 +10,12 @@ const post = (title) => fetch(`${base}/api/notes`, {
 });
 const count = async () => (await (await fetch(`${base}/api/notes`)).json()).length;
 
-const created = await post('  hello harness  ');
+const created = await post('  hello factory  ');
 assert.equal(created.status, 201, 'a padded title is accepted');
-assert.equal((await created.json()).title, 'hello harness', 'the stored title is trimmed');
+assert.equal((await created.json()).title, 'hello factory', 'the stored title is trimmed');
 
 const html = await (await fetch(`${base}/`)).text();
-assert.ok(html.includes('<li data-testid="note-title">hello harness</li>'), 'the reloaded page shows the trimmed title');
+assert.ok(html.includes('<li data-testid="note-title">hello factory</li>'), 'the reloaded page shows the trimmed title');
 
 const before = await count();
 const rejected = await post('   \t ');

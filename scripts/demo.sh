@@ -5,9 +5,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PLUGIN="$ROOT/plugins/harness"
-HARNESS=(node "$PLUGIN/scripts/harness.mjs")
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/harness-demo.XXXXXX")"
+PLUGIN="$ROOT/plugins/factory"
+FACTORY=(node "$PLUGIN/scripts/factory.mjs")
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/factory-demo.XXXXXX")"
 APP="$WORK/notes-app"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -23,18 +23,18 @@ cp -R "$ROOT/examples/notes-app" "$APP"
 git -C "$APP" init -q -b main
 git -C "$APP" -c user.name=demo -c user.email=demo@example.invalid add -A
 git -C "$APP" -c user.name=demo -c user.email=demo@example.invalid commit -q -m "baseline"
-"${HARNESS[@]}" doctor --repo "$APP"
+"${FACTORY[@]}" doctor --repo "$APP"
 
 step "Owner reviews which check proves each criterion, then activates the task"
 RECORD="$WORK/trim-note-titles.acceptance.json"
-"${HARNESS[@]}" prepare tasks/trim-note-titles.json --repo "$APP" --out "$RECORD"
-if "${HARNESS[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP" 2>/dev/null; then
+"${FACTORY[@]}" prepare tasks/trim-note-titles.json --repo "$APP" --out "$RECORD"
+if "${FACTORY[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP" 2>/dev/null; then
   die "activation must refuse a record nobody has reviewed"
 fi
 echo "(activation refuses the unreviewed draft)"
 # The owner's review: both criteria are asserted by acceptance/e2e.mjs, so the proposed mapping stands.
 node -e 'const fs=require("fs");const f=process.argv[1];const r=JSON.parse(fs.readFileSync(f));r.unresolved_decisions=[];fs.writeFileSync(f,JSON.stringify(r,null,2))' "$RECORD"
-"${HARNESS[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP"
+"${FACTORY[@]}" activate tasks/trim-note-titles.json --acceptance "$RECORD" --repo "$APP"
 
 step "1. Guard denies an edit to a protected acceptance test"
 OUT="$(event PreToolUse Edit "{\"file_path\":\"$APP/acceptance/e2e.mjs\"}" | hook)"
@@ -70,10 +70,10 @@ JS
 OUT="$(event Stop | hook)"
 echo "$OUT"
 grep -q 'gate passed' <<<"$OUT" || die "expected the gate to pass after the repair"
-"${HARNESS[@]}" status --repo "$APP"
+"${FACTORY[@]}" status --repo "$APP"
 
 step "Cleanup check"
-LEFT="$(docker ps -a --filter 'label=com.docker.compose.project' --format '{{.Label "com.docker.compose.project"}}' | grep -c '^harness-' || true)"
-[ "$LEFT" = "0" ] || die "$LEFT harness container(s) were left behind"
-echo "No harness containers remain."
+LEFT="$(docker ps -a --filter 'label=com.docker.compose.project' --format '{{.Label "com.docker.compose.project"}}' | grep -c '^factory-' || true)"
+[ "$LEFT" = "0" ] || die "$LEFT factory container(s) were left behind"
+echo "No factory containers remain."
 printf '\nDEMO PASSED: guard denial, failing gate, passing repair.\n'

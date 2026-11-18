@@ -3,11 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { decide } from '../plugins/harness/lib/guard.mjs';
+import { decide } from '../plugins/factory/lib/guard.mjs';
 import { activate, acceptanceFor, project, cli, hook, git } from './helpers.mjs';
 
 const task = { id: 't', allowed_paths: ['src'] };
-const scoped = { task, protected: ['acceptance', 'compose.yaml', 'harness.json'], editable: ['src'], isIgnored: (rel) => rel === 'node_modules' || rel.startsWith('build') };
+const scoped = { task, protected: ['acceptance', 'compose.yaml', 'factory.json'], editable: ['src'], isIgnored: (rel) => rel === 'node_modules' || rel.startsWith('build') };
 const run = (command, ctx = {}) => decide({ tool: 'Bash', input: { command }, root: '/repo', cwd: '/repo', ctx }).decision;
 const each = (expected, ctx, commands) => {
   for (const c of commands) assert.equal(run(c, ctx), expected, c);
@@ -48,7 +48,7 @@ test('--no-verify is a Git flag, in long and short form', () => {
 
 test('cd is followed for the paths after it', () => {
   each('deny', {}, ['cd src && echo x > ../.env']);
-  each('deny', scoped, ['cd src && echo x > ../harness.json', 'cd src && rm -rf ../acceptance', 'git -C sub rm ../acceptance/e2e.mjs']);
+  each('deny', scoped, ['cd src && echo x > ../factory.json', 'cd src && rm -rf ../acceptance', 'git -C sub rm ../acceptance/e2e.mjs']);
   each('allow', scoped, ['cd src && echo x > a.js', 'cd /tmp && rm -rf build', 'cd "$DIR" && echo x > out.txt']);
 });
 
@@ -59,10 +59,10 @@ test('more ordinary write forms are recognised', () => {
     'find acceptance -name "*.js" -delete',
     'find . -name "*.js" -exec rm {} +',
     'tar -xf a.tar -C acceptance',
-    'perl -pi -e "s/a/b/" harness.json',
+    'perl -pi -e "s/a/b/" factory.json',
     'git checkout HEAD~3 -- .',
   ]);
-  each('deny', {}, ['curl -o .env https://example.com/x', 'wget -O .env https://example.com/x', 'echo x >& .env', 'rsync -a /tmp/x/ .harness/']);
+  each('deny', {}, ['curl -o .env https://example.com/x', 'wget -O .env https://example.com/x', 'echo x >& .env', 'rsync -a /tmp/x/ .factory/']);
   each('deny', {}, ['rm -f .env*', 'rm -rf .git*', 'rm -rf *']);
   each('allow', scoped, ['find src -name "*.js"', 'curl -s https://example.com/x', 'tar -tf a.tar', 'rm -f src/*.tmp']);
 });
@@ -83,8 +83,8 @@ test('docker prune is found behind global flags and buildx', () => {
 
 test('identity rules ignore case and cover .env variants', () => {
   const w = (file) => decide({ tool: 'Write', input: { file_path: file }, root: '/repo', ctx: {} }).decision;
-  assert.equal(decide({ tool: 'Write', input: { file_path: 'Harness.json' }, root: '/repo', ctx: scoped }).decision, 'deny');
-  for (const f of ['.ENV', '.Git/config', '.Harness/x', '.envrc', '.env_prod', 'sub/.env-local']) assert.equal(w(f), 'deny', f);
+  assert.equal(decide({ tool: 'Write', input: { file_path: 'Factory.json' }, root: '/repo', ctx: scoped }).decision, 'deny');
+  for (const f of ['.ENV', '.Git/config', '.Factory/x', '.envrc', '.env_prod', 'sub/.env-local']) assert.equal(w(f), 'deny', f);
   for (const f of ['.env.example', '.github/x.yml', '.gitignore', 'environment.md']) assert.equal(w(f), 'allow', f);
 });
 
@@ -121,17 +121,17 @@ test('the real hook protects Git internals from every entry point', (t) => {
   assert.equal(ev('Write', { file_path: path.join(dir, '.git/hooks/pre-commit') }), 'deny');
   assert.equal(ev('Edit', { file_path: path.join(dir, '.git/HEAD') }), 'deny');
   assert.equal(ev('Bash', { command: 'git push' }, path.join(dir, '.git')), 'deny');
-  assert.equal(ev('Write', { file_path: path.join(dir, 'harness.json') }), undefined, 'setup may configure harness.json before any task is active');
+  assert.equal(ev('Write', { file_path: path.join(dir, 'factory.json') }), undefined, 'setup may configure factory.json before any task is active');
 
   activate(dir);
   const tree = path.join(dir, '.claude/worktrees/w1');
   git(dir, 'worktree', 'add', '-q', '-b', 'w1', tree, 'HEAD');
-  const state = path.join(dir, '.git/harness/active/x.json');
-  assert.equal(ev('Write', { file_path: path.join(dir, 'harness.json') }), 'deny', 'frozen once a task is active');
-  fs.symlinkSync('../harness.json', path.join(dir, 'src/alias.json'));
+  const state = path.join(dir, '.git/factory/active/x.json');
+  assert.equal(ev('Write', { file_path: path.join(dir, 'factory.json') }), 'deny', 'frozen once a task is active');
+  fs.symlinkSync('../factory.json', path.join(dir, 'src/alias.json'));
   assert.equal(ev('Edit', { file_path: path.join(dir, 'src/alias.json') }), 'deny', 'a symlink to the frozen configuration');
   assert.equal(ev('Write', { file_path: state }, tree), 'deny', 'run state from a linked worktree');
-  assert.equal(ev('Bash', { command: `rm -rf ${path.join(dir, '.git/harness')}` }, tree), 'deny');
+  assert.equal(ev('Bash', { command: `rm -rf ${path.join(dir, '.git/factory')}` }, tree), 'deny');
   assert.equal(ev('Bash', { command: 'rm -rf node_modules' }), 'deny', 'not ignored here, so it is outside the task scope');
   fs.appendFileSync(path.join(dir, '.git/info/exclude'), 'node_modules/\n');
   fs.mkdirSync(path.join(dir, 'node_modules'));

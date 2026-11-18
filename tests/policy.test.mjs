@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { covers, classifyWrite, relativeTo, isHoldout } from '../plugins/harness/lib/policy.mjs';
-import { decide } from '../plugins/harness/lib/guard.mjs';
-import { analyze } from '../plugins/harness/lib/shell.mjs';
-import { validateConfig, validateTask } from '../plugins/harness/lib/config.mjs';
-import { lintModel, isForeign } from '../plugins/harness/lib/compose.mjs';
+import { covers, classifyWrite, relativeTo, isHoldout } from '../plugins/factory/lib/policy.mjs';
+import { decide } from '../plugins/factory/lib/guard.mjs';
+import { analyze } from '../plugins/factory/lib/shell.mjs';
+import { validateConfig, validateTask } from '../plugins/factory/lib/config.mjs';
+import { lintModel, isForeign } from '../plugins/factory/lib/compose.mjs';
 
 const task = { id: 't', allowed_paths: ['src/title.mjs', 'src/lib'] };
-const ctx = { task, protected: ['acceptance', 'compose.yaml', 'harness.json'], editable: ['src'] };
+const ctx = { task, protected: ['acceptance', 'compose.yaml', 'factory.json'], editable: ['src'] };
 
 test('covers matches a path, its children and globs', () => {
   assert.ok(covers('src', 'src/a/b.js'));
@@ -33,9 +33,9 @@ test('an active task limits writes to its allowed paths', () => {
 
 test('without a task only identity rules apply', () => {
   assert.equal(classifyWrite('src/server.mjs', {}), null);
-  assert.equal(classifyWrite('harness.json', {}), null, 'configuration is editable until a task is activated');
-  assert.match(classifyWrite('harness.json', ctx), /frozen while task/);
-  assert.match(classifyWrite('.harness/x.json', {}), /control directory/);
+  assert.equal(classifyWrite('factory.json', {}), null, 'configuration is editable until a task is activated');
+  assert.match(classifyWrite('factory.json', ctx), /frozen while task/);
+  assert.match(classifyWrite('.factory/x.json', {}), /control directory/);
   assert.match(classifyWrite('.env.production', {}), /environment file/);
   assert.equal(classifyWrite('.env.example', {}), null);
   assert.equal(classifyWrite('.github/workflows/ci.yml', {}), null);
@@ -60,11 +60,11 @@ test('shell writes inside an active task are scoped', () => {
 
 test('owner checkpoints ask, and plan-approved activation does not', () => {
   const call = (input) => decide({ tool: 'Bash', input: { command: input }, root: '/repo', cwd: '/repo', ctx: {} });
-  assert.equal(call('node "/p/scripts/harness.mjs" activate tasks/t.json').decision, 'ask');
-  assert.equal(call('node /p/scripts/harness.mjs deactivate').decision, 'ask');
-  assert.equal(call('node /p/scripts/harness.mjs approve-plan plan.json').decision, 'ask');
-  assert.equal(call('node /p/scripts/harness.mjs activate t.json --approved').decision, 'allow');
-  assert.equal(call('node /p/scripts/harness.mjs verify').decision, 'allow');
+  assert.equal(call('node "/p/scripts/factory.mjs" activate tasks/t.json').decision, 'ask');
+  assert.equal(call('node /p/scripts/factory.mjs deactivate').decision, 'ask');
+  assert.equal(call('node /p/scripts/factory.mjs approve-plan plan.json').decision, 'ask');
+  assert.equal(call('node /p/scripts/factory.mjs activate t.json --approved').decision, 'allow');
+  assert.equal(call('node /p/scripts/factory.mjs verify').decision, 'allow');
 });
 
 test('the shell reader finds nested and quoted forms', () => {
@@ -112,8 +112,8 @@ test('compose policy rejects shared or host-reaching definitions', () => {
 });
 
 test('parallel gates do not count each other as foreign containers', () => {
-  assert.equal(isForeign('harness-20261118abc', 'harness-20261118xyz'), false);
-  assert.equal(isForeign('harness-20261118xyz', 'harness-20261118xyz'), false);
-  assert.equal(isForeign('chronograph', 'harness-20261118xyz'), true);
-  assert.equal(isForeign('', 'harness-20261118xyz'), true);
+  assert.equal(isForeign('factory-20261118abc', 'factory-20261118xyz'), false);
+  assert.equal(isForeign('factory-20261118xyz', 'factory-20261118xyz'), false);
+  assert.equal(isForeign('chronograph', 'factory-20261118xyz'), true);
+  assert.equal(isForeign('', 'factory-20261118xyz'), true);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { decide } from '../plugins/harness/lib/guard.mjs';
+import { decide } from '../plugins/factory/lib/guard.mjs';
 
 const suite = JSON.parse(fs.readFileSync(new URL('../contract/guard-cases.json', import.meta.url), 'utf8'));
 const { root, control_dir: controlDir, frozen, holdout_markers: holdoutMarkers } = suite.context;

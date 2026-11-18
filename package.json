@@ -1,14 +1,14 @@
 {
-  "name": "claude-harness",
+  "name": "claude-factory",
   "private": true,
   "type": "module",
-  "description": "Development repository for the harness Claude Code plugin.",
+  "description": "Development repository for the factory Claude Code plugin.",
   "license": "MIT",
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "harness": "node plugins/harness/scripts/harness.mjs",
+    "factory": "node plugins/factory/scripts/factory.mjs",
     "demo": "bash scripts/demo.sh",
-    "validate": "claude plugin validate --strict plugins/harness && claude plugin validate --strict ."
+    "validate": "claude plugin validate --strict plugins/factory && claude plugin validate --strict ."
   }
 }

@@ -22,13 +22,13 @@ test('activation freezes the task and the guard enforces its scope', (t) => {
   const a = activate(dir);
   assert.equal(a.code, 0, a.err);
   assert.equal(activate(dir).code, 2, 'a second activation is refused');
-  assert.ok(fs.existsSync(path.join(dir, '.git', 'harness', 'active')), 'state lives in the Git common directory');
+  assert.ok(fs.existsSync(path.join(dir, '.git', 'factory', 'active')), 'state lives in the Git common directory');
 
   const deny = (tool, input) => hook(event(dir, 'PreToolUse', tool, input)).json?.hookSpecificOutput.permissionDecision;
   assert.equal(deny('Edit', { file_path: path.join(dir, 'src/title.mjs') }), undefined);
   assert.equal(deny('Edit', { file_path: 'src/server.mjs' }), 'deny');
   assert.equal(deny('Write', { file_path: path.join(dir, 'acceptance/e2e.mjs') }), 'deny');
-  assert.equal(deny('Write', { file_path: path.join(dir, 'harness.json') }), 'deny');
+  assert.equal(deny('Write', { file_path: path.join(dir, 'factory.json') }), 'deny');
   assert.equal(deny('Bash', { command: 'sed -i "" s/a/b/ compose.yaml' }), 'deny');
   assert.equal(deny('Bash', { command: 'git push origin main' }), 'deny');
   assert.equal(deny('Bash', { command: 'git reset --hard HEAD' }), 'ask');
@@ -83,10 +83,10 @@ test('the gate fails scope and blocks on protected changes before booting anythi
   result = JSON.parse(cli(dir, ['verify', '--json']).out);
   assert.equal(result.status, 'blocked');
   git(dir, 'checkout', '--', 'acceptance/e2e.mjs');
-  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'harness.json'), 'utf8'));
-  fs.writeFileSync(path.join(dir, 'harness.json'), JSON.stringify({ ...cfg, checks: [] }));
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'factory.json'), 'utf8'));
+  fs.writeFileSync(path.join(dir, 'factory.json'), JSON.stringify({ ...cfg, checks: [] }));
   result = JSON.parse(cli(dir, ['verify', '--json']).out);
-  assert.equal(result.status, 'blocked', 'a weakened harness.json is a protected change');
+  assert.equal(result.status, 'blocked', 'a weakened factory.json is a protected change');
 });
 
 test('the Stop hook blocks a failing candidate within its attempt budget', (t) => {
@@ -101,7 +101,7 @@ test('the Stop hook blocks a failing candidate within its attempt budget', (t) =
     assert.match(out.reason, new RegExp(`Attempt ${i} of 3`));
   }
   assert.match(hook(event(dir, 'Stop'), env).json.systemMessage, /BLOCKED/);
-  assert.equal(hook(event(dir, 'Stop'), { ...env, CLAUDE_HARNESS_MANAGED: '1' }).json, null, 'managed runs are gated by their controller');
+  assert.equal(hook(event(dir, 'Stop'), { ...env, CLAUDE_FACTORY_MANAGED: '1' }).json, null, 'managed runs are gated by their controller');
 });
 
 test('plans validate ownership and gate plan-approved activation', (t) => {
@@ -122,7 +122,7 @@ test('plans validate ownership and gate plan-approved activation', (t) => {
   assert.equal(ok.code, 0, ok.err);
   fs.rmSync(path.join(dir, 'plan.json'));
   fs.rmSync(path.join(dir, 'rogue.json'));
-  const approved = path.join(dir, '.git', 'harness', 'plans', parent.id, 'a.json');
+  const approved = path.join(dir, '.git', 'factory', 'plans', parent.id, 'a.json');
   assert.equal(cli(dir, ['activate', approved, '--approved']).code, 0);
 });
 
@@ -130,12 +130,12 @@ test('setup previews, applies and never overwrites', (t) => {
   const dir = project(t, { adopt: false });
   git(dir, 'add', '-A');
   assert.match(cli(dir, ['setup']).out, /Nothing was written/);
-  assert.ok(!fs.existsSync(path.join(dir, 'harness.json')));
+  assert.ok(!fs.existsSync(path.join(dir, 'factory.json')));
   assert.equal(cli(dir, ['setup', '--apply']).code, 0);
   assert.ok(fs.existsSync(path.join(dir, '.claude/settings.json')));
-  fs.writeFileSync(path.join(dir, 'harness.json'), '{"mine":true}');
+  fs.writeFileSync(path.join(dir, 'factory.json'), '{"mine":true}');
   cli(dir, ['setup', '--apply']);
-  assert.equal(fs.readFileSync(path.join(dir, 'harness.json'), 'utf8'), '{"mine":true}');
+  assert.equal(fs.readFileSync(path.join(dir, 'factory.json'), 'utf8'), '{"mine":true}');
 });
 
 test('the review packet carries the task and the diff, and flags missing evidence', (t) => {
@@ -193,8 +193,8 @@ test('acceptance records: every criterion must be mapped before activation', (t)
 });
 
 test('acceptance records: a manual observation is bound to the candidate it was made on', async (t) => {
-  const { getActive, updateActive, repoInfo } = await import('../plugins/harness/lib/state.mjs');
-  const { pendingManual } = await import('../plugins/harness/lib/acceptance.mjs');
+  const { getActive, updateActive, repoInfo } = await import('../plugins/factory/lib/state.mjs');
+  const { pendingManual } = await import('../plugins/factory/lib/acceptance.mjs');
   const dir = project(t);
   const r = activate(dir, 'tasks/trim-note-titles.json', (rec) => ({ ...rec, criteria: rec.criteria.map((c, i) => (i === 0 ? { ...c, manual: ['The page shows the trimmed title after a reload'] } : c)) }));
   assert.equal(r.code, 0, r.err);

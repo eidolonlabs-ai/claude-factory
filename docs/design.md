@@ -1,4 +1,4 @@
-# Claude Harness design outline
+# Claude Factory design outline
 
 Start with a solo developer using Claude Code locally. The developer approves the scope and acceptance evidence and decides when to ship. The work may span a new app, an existing project, a bug fix, or a feature change.
 
@@ -12,18 +12,18 @@ Start with a solo developer using Claude Code locally. The developer approves th
 
 ## Status
 
-Version 0.1.0 implements each milestone in the `harness` plugin under [plugins/harness](../plugins/harness).
+Version 0.1.0 implements each milestone in the `factory` plugin under [plugins/factory](../plugins/factory).
 
 | Milestone | Where | Evidence |
 | --- | --- | --- |
-| Intake | `/harness:intake`, `harness-architect`, `harness check-task`, `harness prepare` | Task and acceptance-record tests |
-| Verification | `harness verify` ([workflow](workflow.md)) | `tests/docker-e2e.test.mjs`, `scripts/demo.sh` |
+| Intake | `/factory:intake`, `factory-architect`, `factory check-task`, `factory prepare` | Task and acceptance-record tests |
+| Verification | `factory verify` ([workflow](workflow.md)) | `tests/docker-e2e.test.mjs`, `scripts/demo.sh` |
 | Hooks | `hooks/hooks.json`, `scripts/hook.mjs` ([hooks](hooks.md)) | `scripts/demo.sh`, family guard cases |
-| Review and orchestration | `/harness:review`, `/harness:orchestrate`, `harness integrate`, `harness run` | `tests/docker-e2e.test.mjs`; a live session with two concurrent builder subagents |
+| Review and orchestration | `/factory:review`, `/factory:orchestrate`, `factory integrate`, `factory run` | `tests/docker-e2e.test.mjs`; a live session with two concurrent builder subagents |
 | Distribution | `.claude-plugin/marketplace.json` ([plugin](plugin.md)) | `claude plugin validate --strict` |
 
 Known gaps against the family contract: holdouts are not implemented (the step reports `NOT_RUN`), the demo's end-to-end test drives HTTP and not a browser, and the reviewer is a fresh context from the same vendor. Parallel builders all start from the approved base, so a node cannot build on another node's output within one plan. The gate tests the working tree in place; it does not yet build from a clean export of the candidate, so a git-ignored file that the Docker build copies is outside the candidate digest.
 
-Use the [harness family contract](../CONTRACT.md) for design alignment. Keep verification in executable checks and treat the developer's permission model as the enforcement boundary. Separate verifier access is required for tests a builder must not be able to read or edit.
+Use the [factory family contract](../CONTRACT.md) for design alignment. Keep verification in executable checks and treat the developer's permission model as the enforcement boundary. Separate verifier access is required for tests a builder must not be able to read or edit.
 
 [Claude Code hooks](https://code.claude.com/docs/en/hooks) · [Claude Code plugins](https://code.claude.com/docs/en/plugins)

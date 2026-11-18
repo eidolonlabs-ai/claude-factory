@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "id": "plugin-v0-1-0",
-  "title": "Complete the harness and package it as a Claude Code plugin",
-  "specification": "Implement the five design milestones (intake, verification, hooks, review and orchestration, distribution) as a zero-dependency Node plugin under plugins/harness, aligned with the family contract and the codex-harness harness.json v3 and task formats, using native Claude Code hooks, skills, subagents and worktree isolation.",
+  "title": "Complete the factory and package it as a Claude Code plugin",
+  "specification": "Implement the five design milestones (intake, verification, hooks, review and orchestration, distribution) as a zero-dependency Node plugin under plugins/factory, aligned with the family contract and the codex-factory factory.json v3 and task formats, using native Claude Code hooks, skills, subagents and worktree isolation.",
   "base_ref": "1dde3fbf1e845bac157cf9d2143bc9ba96cbda25",
   "allowed_paths": [".claude-plugin", ".claude", ".github", ".gitignore", "CONTRACT.md", "README.md", "contract", "docs", "examples", "package.json", "plugins", "scripts", "tasks", "tests"],
   "acceptance_criteria": [
