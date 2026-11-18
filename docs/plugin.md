@@ -44,7 +44,7 @@ Setup previews first and never overwrites an existing file. It adds:
 | File | Purpose |
 | --- | --- |
 | `harness.json` | Compose files, services, the test service, and the protection policy. Same format as the family's v3 config. |
-| `.claude/settings.json` | Permission deny rules for secrets and acceptance inputs. Written only if absent; otherwise a suggestion lands in `docs/harness/`. |
+| `.claude/settings.json` | Permission deny rules for secrets and `git push`. Written only if absent; otherwise a suggestion lands in `docs/harness/`. Rules for `harness.json` and acceptance inputs are added last, after the configuration is committed, because they also bind Claude. |
 | `docs/harness/CLAUDE.snippet.md` | Instructions to merge into `CLAUDE.md` after review. |
 | `tasks/example.json` | The task format. |
 | `.gitignore` entries | `.env` files, local settings, `.claude/worktrees/`, and `tasks/drafts/` for task and acceptance drafts. |

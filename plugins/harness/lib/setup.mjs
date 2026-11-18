@@ -34,7 +34,7 @@ export function setup(cwd, apply) {
   file('docs/harness/CLAUDE.snippet.md', 'CLAUDE.snippet.md', 'merge into CLAUDE.md after review');
   const settings = path.join(repo.root, '.claude', 'settings.json');
   if (fs.existsSync(settings)) file('docs/harness/settings.suggested.json', 'settings.json', 'permission rules to merge into .claude/settings.json');
-  else file('.claude/settings.json', 'settings.json', 'native permission rules backing the guard');
+  else file('.claude/settings.json', 'settings.json', 'permission rules for secrets; add rules for acceptance inputs once harness.json is committed');
 
   const ignore = path.join(repo.root, '.gitignore');
   const current = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';

@@ -10,7 +10,7 @@ const inside = (dir, abs) => abs === dir || abs.startsWith(`${dir}${path.sep}`);
 function guardedNames(ctx) {
   return [
     '.env', '.git',
-    ...(ctx.controlFiles ?? CONTROL_FILES),
+    ...(ctx.task ? ctx.controlFiles ?? CONTROL_FILES : []),
     ...(ctx.controlPrefixes ?? CONTROL_PREFIXES).map((p) => p.replace(/\/$/, '')),
     ...(ctx.frozen ?? []),
     ...(ctx.task ? ctx.protected ?? [] : []),

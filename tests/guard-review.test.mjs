@@ -47,8 +47,8 @@ test('--no-verify is a Git flag, in long and short form', () => {
 });
 
 test('cd is followed for the paths after it', () => {
-  each('deny', {}, ['cd src && echo x > ../harness.json']);
-  each('deny', scoped, ['cd src && rm -rf ../acceptance', 'git -C sub rm ../acceptance/e2e.mjs']);
+  each('deny', {}, ['cd src && echo x > ../.env']);
+  each('deny', scoped, ['cd src && echo x > ../harness.json', 'cd src && rm -rf ../acceptance', 'git -C sub rm ../acceptance/e2e.mjs']);
   each('allow', scoped, ['cd src && echo x > a.js', 'cd /tmp && rm -rf build', 'cd "$DIR" && echo x > out.txt']);
 });
 
@@ -83,7 +83,8 @@ test('docker prune is found behind global flags and buildx', () => {
 
 test('identity rules ignore case and cover .env variants', () => {
   const w = (file) => decide({ tool: 'Write', input: { file_path: file }, root: '/repo', ctx: {} }).decision;
-  for (const f of ['.ENV', 'Harness.json', '.Git/config', '.Harness/x', '.envrc', '.env_prod', 'sub/.env-local']) assert.equal(w(f), 'deny', f);
+  assert.equal(decide({ tool: 'Write', input: { file_path: 'Harness.json' }, root: '/repo', ctx: scoped }).decision, 'deny');
+  for (const f of ['.ENV', '.Git/config', '.Harness/x', '.envrc', '.env_prod', 'sub/.env-local']) assert.equal(w(f), 'deny', f);
   for (const f of ['.env.example', '.github/x.yml', '.gitignore', 'environment.md']) assert.equal(w(f), 'allow', f);
 });
 
@@ -120,13 +121,15 @@ test('the real hook protects Git internals from every entry point', (t) => {
   assert.equal(ev('Write', { file_path: path.join(dir, '.git/hooks/pre-commit') }), 'deny');
   assert.equal(ev('Edit', { file_path: path.join(dir, '.git/HEAD') }), 'deny');
   assert.equal(ev('Bash', { command: 'git push' }, path.join(dir, '.git')), 'deny');
-  fs.symlinkSync('../harness.json', path.join(dir, 'src/alias.json'));
-  assert.equal(ev('Edit', { file_path: path.join(dir, 'src/alias.json') }), 'deny', 'a symlink to a control file');
+  assert.equal(ev('Write', { file_path: path.join(dir, 'harness.json') }), undefined, 'setup may configure harness.json before any task is active');
 
   activate(dir);
   const tree = path.join(dir, '.claude/worktrees/w1');
   git(dir, 'worktree', 'add', '-q', '-b', 'w1', tree, 'HEAD');
   const state = path.join(dir, '.git/harness/active/x.json');
+  assert.equal(ev('Write', { file_path: path.join(dir, 'harness.json') }), 'deny', 'frozen once a task is active');
+  fs.symlinkSync('../harness.json', path.join(dir, 'src/alias.json'));
+  assert.equal(ev('Edit', { file_path: path.join(dir, 'src/alias.json') }), 'deny', 'a symlink to the frozen configuration');
   assert.equal(ev('Write', { file_path: state }, tree), 'deny', 'run state from a linked worktree');
   assert.equal(ev('Bash', { command: `rm -rf ${path.join(dir, '.git/harness')}` }, tree), 'deny');
   assert.equal(ev('Bash', { command: 'rm -rf node_modules' }), 'deny', 'not ignored here, so it is outside the task scope');

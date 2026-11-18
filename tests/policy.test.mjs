@@ -33,7 +33,9 @@ test('an active task limits writes to its allowed paths', () => {
 
 test('without a task only identity rules apply', () => {
   assert.equal(classifyWrite('src/server.mjs', {}), null);
-  assert.match(classifyWrite('harness.json', {}), /owner edits/);
+  assert.equal(classifyWrite('harness.json', {}), null, 'configuration is editable until a task is activated');
+  assert.match(classifyWrite('harness.json', ctx), /frozen while task/);
+  assert.match(classifyWrite('.harness/x.json', {}), /control directory/);
   assert.match(classifyWrite('.env.production', {}), /environment file/);
   assert.equal(classifyWrite('.env.example', {}), null);
   assert.equal(classifyWrite('.github/workflows/ci.yml', {}), null);

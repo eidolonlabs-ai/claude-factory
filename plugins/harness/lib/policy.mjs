@@ -79,7 +79,8 @@ export function classifyWrite(rel, ctx = {}, asDir = false) {
   for (const p of ctx.controlPrefixes ?? CONTROL_PREFIXES) {
     if (`${low}/`.startsWith(p.toLowerCase())) return `${rel} is in the harness control directory`;
   }
-  if ((ctx.controlFiles ?? CONTROL_FILES).some((f) => f.toLowerCase() === low)) return `${rel} is harness configuration; the owner edits it`;
+  // Configuration is written during setup and frozen at activation: it is only off limits while a task is active.
+  if (ctx.task && (ctx.controlFiles ?? CONTROL_FILES).some((f) => f.toLowerCase() === low)) return `${rel} is harness configuration, frozen while task ${ctx.task.id} is active`;
   if (isHoldout(rel, ctx.holdoutMarkers) || isHoldout(dir, ctx.holdoutMarkers)) return `${rel} is a holdout`;
   const frozen = ctx.frozen ?? [];
   if (frozen.includes(rel)) return `${rel} is frozen`;
