@@ -114,6 +114,8 @@ test('compose policy rejects shared or host-reaching definitions', () => {
 test('parallel gates do not count each other as foreign containers', () => {
   assert.equal(isForeign('factory-20261118abc', 'factory-20261118xyz'), false);
   assert.equal(isForeign('factory-20261118xyz', 'factory-20261118xyz'), false);
+  assert.equal(isForeign('chronograph-a1b2c3d4', 'factory-20261118xyz'), false);
+  assert.equal(isForeign('chronograph-claude-preview', 'factory-20261118xyz'), false);
   assert.equal(isForeign('chronograph', 'factory-20261118xyz'), true);
   assert.equal(isForeign('', 'factory-20261118xyz'), true);
 });

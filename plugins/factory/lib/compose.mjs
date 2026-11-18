@@ -48,11 +48,16 @@ export function lintModel(model, root, wanted) {
 }
 
 /**
- * Containers this gate must leave alone. Other gates' projects are excluded:
- * parallel builders each boot and remove their own `factory-` stack, and that
- * is not interference.
+ * Containers this gate must leave alone. Other factories' ephemeral stacks
+ * (`factory-*`, `<project>-<8hex>`, `*-preview`) run concurrently on the same
+ * daemon and are not interference.
  */
-export const isForeign = (label, project) => label !== project && !String(label ?? '').startsWith('factory-');
+export const isPeerFactoryProject = (label) => {
+  const s = String(label ?? '');
+  return s.startsWith('factory-') || /-[0-9a-f]{8}$/.test(s) || s.endsWith('-preview');
+};
+
+export const isForeign = (label, project) => label !== project && !isPeerFactoryProject(label);
 
 function foreignContainers(project) {
   const r = sh('docker', ['ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.project"}}'], { timeout: 30 });

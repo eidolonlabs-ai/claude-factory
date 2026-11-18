@@ -4,7 +4,7 @@ Commands below use `factory` for `node <plugin>/scripts/factory.mjs`. Inside Cla
 
 ## Task
 
-A task is JSON with a base commit, allowed paths, and acceptance criteria. The format is shared with the sibling factoryes.
+A task is JSON with a base commit, allowed paths, and acceptance criteria. The format is shared with the sibling factories.
 
 ```json
 {
@@ -18,7 +18,7 @@ A task is JSON with a base commit, allowed paths, and acceptance criteria. The f
 }
 ```
 
-`/factory:intake` drafts one and asks about decisions that change scope or acceptance. A task file inside the working tree counts as a change, so either commit it with `base_ref: "HEAD"` (activation pins the commit that resolves to) or keep a SHA-pinned copy outside the working tree. Tests that prove the criteria are acceptance inputs: land them in the base commit, before activation.
+`/factory:intake` audits requirement sufficiency across all 5 entry points ([entry paths](entry-paths.md)) and the 4-Part State & Edge-Case Matrix—actively pushing back (`needs_clarification`) when specs are incomplete—then drafts a task. A task file inside the working tree counts as a change, so either commit it with `base_ref: "HEAD"` (activation pins the commit that resolves to) or keep a SHA-pinned copy outside the working tree. Tests that prove the criteria (including Milestone 1.5 Frozen Adversarial Tests) are acceptance inputs: land them in the base commit, before `/factory:plan` activation.
 
 ## Acceptance record
 
@@ -39,11 +39,13 @@ A task says what must be true. Its acceptance record says what proves each crite
 
 `checks` cites `compose:e2e` or the name of a configured check. `manual` lists observations a person makes on the running application when no check can prove the criterion. The draft proposes `compose:e2e` for everything; the owner corrects the mapping and clears `unresolved_decisions`. The record names the base commit, so keep it outside the working tree or in a git-ignored folder such as `tasks/drafts/`. The format is shared with codex-factory.
 
-## Activate
+Return the draft task, the proposed mapping, the decisions taken, and the open questions. Intake ends here: the owner freezes and activates the task with `/factory:plan` (or runs `/factory:pipeline` end-to-end).
 
-`/factory:activate tasks/<id>.json <record.json>` is the owner's checkpoint. It refuses a placeholder base, allowed paths that overlap protected paths, protected files that already differ from the base, and a record that does not map every criterion of this exact task once, cites an unknown check, or still has unresolved decisions. It then freezes the task, the record, the resolved base, and the current `factory.json` for this worktree.
+## Plan & Freeze
 
-State lives in the Git common directory under `factory/`: outside every working tree, shared by all worktrees, and covered by the guard's `.git/` rule. `/factory:activate off` archives the task.
+`/factory:plan tasks/<id>.json <record.json>` is the owner's checkpoint (freezing `SPEC.md`, Milestone 1.5 tests, and the task). It refuses a placeholder base, allowed paths that overlap protected paths, protected files that already differ from the base, and a record that does not map every criterion of this exact task once, cites an unknown check, or still has unresolved decisions. It then freezes the task, the record, the resolved base, and the current `factory.json` for this worktree.
+
+State lives in the Git common directory under `factory/`: outside every working tree, shared by all worktrees, and covered by the guard's `.git/` rule. `/factory:plan off` archives the task.
 
 ## Verify
 
@@ -75,11 +77,11 @@ Each run writes `result.json` and bounded logs to `<git-common-dir>/factory/runs
 
 ## Review
 
-`/factory:review` forks a fresh context running the `factory-reviewer` subagent with the output of `factory review-packet`: the task, the gate evidence (flagged if missing or stale), and the diff. The reviewer has no edit tools and none of the builder's conversation. Its findings are input for the owner; a collected review is not an approval.
+`/factory:review` forks a fresh context running the `factory-reviewer` subagent with the output of `factory review-packet`: the task, the gate evidence (flagged if missing or stale), and the diff. The reviewer has no edit tools and none of the builder's conversation, and enforces **Reproduce Before Fixing** (write a failing test reproducing any bug before patching). Its findings are input for the owner; a collected review is not an approval.
 
 ## Parallel builders
 
-`/factory:orchestrate` splits a parent task into nodes with disjoint paths. The plan carries an acceptance record for the parent and for each node; node records may cite checks only, since a builder cannot wait for a person. The owner approves the plan once with `factory approve-plan`, which rejects overlapping ownership without a dependency, paths outside the parent's, unknown dependencies, and cycles. Approval pins every task's `base_ref` to the commit it resolves to at that moment, so later commits and merges are measured against the approved base. Each node runs in a `factory-builder` subagent with its own worktree and activates its own task with `--approved`. Every builder starts from the approved base and is gated there alone, so nodes must be independently verifiable; `depends_on` orders the merges and does not give a node its predecessor's code. When a builder stops, the `SubagentStop` hook runs the gate in that builder's worktree. That flag works only for a node of an approved plan, one worktree per node, and never for the parent task.
+`/factory:build` (multi-node worktree mode, backed by `approve-plan` and `integrate`) splits a parent task into nodes with disjoint paths. The plan carries an acceptance record for the parent and for each node; node records may cite checks only, since a builder cannot wait for a person. The owner approves the plan once with `factory approve-plan`, which rejects overlapping ownership without a dependency, paths outside the parent's, unknown dependencies, and cycles. Approval pins every task's `base_ref` to the commit it resolves to at that moment, so later commits and merges are measured against the approved base. Each node runs in a `factory-builder` subagent with its own worktree and activates its own task with `--approved`. Every builder starts from the approved base and is gated there alone, so nodes must be independently verifiable; `depends_on` orders the merges and does not give a node its predecessor's code. When a builder stops, the `SubagentStop` hook runs the gate in that builder's worktree. That flag works only for a node of an approved plan, one worktree per node, and never for the parent task.
 
 `factory integrate <parent-id> --branch <node>=<ref> ...` creates a new worktree under `.claude/worktrees/` at the approved base, activates the parent task there, merges the builder branches in dependency order, and runs a fresh gate. A branch with no commits beyond the base is refused. It never touches the branch you are on, and it keeps the worktree on a conflict.
 

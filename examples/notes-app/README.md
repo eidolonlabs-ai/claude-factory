@@ -4,4 +4,4 @@ A disposable application for trying the factory. The baseline stores note titles
 
 `scripts/demo.sh` in the repository root copies this directory to a temporary Git repository and walks through a guard denial, a failing gate, and a passing gate after the repair, on a real Docker Compose stack.
 
-To try it by hand, copy the directory somewhere, run `git init` and commit everything (the task's `base_ref` is `HEAD`, which activation pins to that commit), then use `/factory:activate tasks/trim-note-titles.json` in Claude Code, review the proposed acceptance mapping it drafts, and ask for the task.
+To try it by hand, copy the directory somewhere, run `git init` and commit everything (the task's `base_ref` is `HEAD`, which activation pins to that commit), then use `/factory:plan tasks/trim-note-titles.json` in Claude Code, review the proposed acceptance mapping it drafts, and ask for the task via `/factory:build`. (This notes app is a fast smoke fixture; the official cross-factory benchmark is [benchmarks/chronograph](../../benchmarks/chronograph/README.md).)

@@ -2,6 +2,7 @@
   "name": "factory",
   "version": "0.1.0",
   "description": "Scoped tasks, hook guards and a real Docker Compose acceptance gate for Claude Code, with fresh-context review and parallel worktree builders.",
+  "icon": ".claude-plugin/icon.png",
   "author": {
     "name": "eidolonlabs-ai",
     "url": "https://github.com/eidolonlabs-ai"

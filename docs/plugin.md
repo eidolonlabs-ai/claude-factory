@@ -29,7 +29,7 @@ The version is set in `plugins/factory/.claude-plugin/plugin.json`. Review chang
 
 ## Adopt a project
 
-Run `/factory:setup`, or from a terminal:
+Run `/factory:pipeline` (or `/factory:setup` first on an unadopted project), or from a terminal:
 
 ```bash
 node /path/to/plugins/factory/scripts/factory.mjs setup
@@ -53,15 +53,22 @@ Then make `factory.json` describe your real stack. The gate rejects a fixed `con
 
 ## What ships
 
-| Component | Names |
+| Component | Names & Layout |
 | --- | --- |
-| Skills | `/factory:setup`, `/factory:intake`, `/factory:activate`, `/factory:verify`, `/factory:status`, `/factory:review`, `/factory:orchestrate` |
+| Skills / Commands | `plugins/factory/skills/<stage>/SKILL.md` exposes `/factory:pipeline`, `/factory:setup`, `/factory:intake`, `/factory:plan`, `/factory:build`, `/factory:verify`, `/factory:review`, `/factory:status` |
 | Subagents | `factory-architect` (read-only intake), `factory-builder` (own worktree), `factory-reviewer` (fresh context, no edit tools) |
-| Hooks | `SessionStart`, `PreToolUse`, `Stop`, `SubagentStop` |
-| Runtime | `scripts/factory.mjs` (CLI) and `scripts/hook.mjs` (hook entry) |
+| Hooks | `SessionStart`, `PreToolUse`, `Stop`, `SubagentStop` (`hooks/hooks.json`) |
+| Bundled Scripts & Lib | `scripts/factory.mjs` (CLI) and `scripts/hook.mjs` (hook entry) backed by `lib/*.mjs` |
+| Manifest & Icon | `.claude-plugin/plugin.json` and 512x512 `.claude-plugin/icon.png` |
 
-## Publish
+### Skills vs. Slash Commands & Bundled Scripts
 
-The repository is its own marketplace: `.claude-plugin/marketplace.json` lists the plugin at `./plugins/factory`, so pushing to GitHub is enough for the install commands above. Before a release, bump the version, then run `npm test`, `FACTORY_E2E=1 npm test`, `bash scripts/demo.sh`, and `npm run validate`.
+Since Claude Code **v2.1.3+**, slash commands and `skills/<name>/SKILL.md` are **unified**—each skill folder under `plugins/factory/skills/<stage>/SKILL.md` is automatically both an agent-discoverable progressive-disclosure skill and the namespaced `/factory:<stage>` slash command (a separate legacy `commands/` directory is unnecessary and would duplicate definitions). Rather than copying scripts inside each skill folder, all 8 skills invoke the shared deterministic runtime at `${CLAUDE_PLUGIN_ROOT}/scripts/factory.mjs` (and hooks invoke `${CLAUDE_PLUGIN_ROOT}/scripts/hook.mjs`).
 
-Plugin names beginning with `claude-` are reserved, which is why the plugin is named `factory` while the repository keeps its name. Submitting to Anthropic's plugin directory additionally needs a square PNG icon at `plugins/factory/.claude-plugin/icon.png` and passes through their safety and policy review.
+### Parallel Implementation Slices
+
+For multi-module tasks, `/factory:plan` validates a plan DAG via `factory approve-plan` with disjoint `allowed_paths` slices per node, and `/factory:build` spawns isolated `factory-builder` subagents in separate `.claude/worktrees/` directories gated by `SubagentStop` and merged via `factory integrate`.
+
+## Publish & Distribute
+
+The repository is its own GitHub marketplace: [.claude-plugin/marketplace.json](../.claude-plugin/marketplace.json) indexes `./plugins/factory`, enabling direct installation via `/plugin marketplace add eidolonlabs-ai/claude-factory` and `/plugin install factory@claude-factory`. Plugin names beginning with `claude-` are reserved, which is why the plugin is named `factory` while the repository keeps `claude-factory`. Before a release or marketplace submission, bump `plugins/factory/.claude-plugin/plugin.json`, ensure `.claude-plugin/icon.png` (512x512 PNG) is present, and run `npm test`, `FACTORY_E2E=1 npm test`, `bash scripts/demo.sh`, `npm run validate`, and `npm run package:plugin` (emits a release tarball and SHA-256 inventory under `dist/`).
