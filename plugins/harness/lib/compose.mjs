@@ -47,13 +47,20 @@ export function lintModel(model, root, wanted) {
   return problems;
 }
 
+/**
+ * Containers this gate must leave alone. Other gates' projects are excluded:
+ * parallel builders each boot and remove their own `harness-` stack, and that
+ * is not interference.
+ */
+export const isForeign = (label, project) => label !== project && !String(label ?? '').startsWith('harness-');
+
 function foreignContainers(project) {
   const r = sh('docker', ['ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.project"}}'], { timeout: 30 });
   const map = new Map();
   if (r.code !== 0) return map;
   for (const line of r.stdout.split('\n').filter(Boolean)) {
     const [id, state, proj] = line.split('\t');
-    if (proj !== project) map.set(id, state);
+    if (isForeign(proj, project)) map.set(id, state);
   }
   return map;
 }

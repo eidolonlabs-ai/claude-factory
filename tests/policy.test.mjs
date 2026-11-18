@@ -4,7 +4,7 @@ import { covers, classifyWrite, relativeTo, isHoldout } from '../plugins/harness
 import { decide } from '../plugins/harness/lib/guard.mjs';
 import { analyze } from '../plugins/harness/lib/shell.mjs';
 import { validateConfig, validateTask } from '../plugins/harness/lib/config.mjs';
-import { lintModel } from '../plugins/harness/lib/compose.mjs';
+import { lintModel, isForeign } from '../plugins/harness/lib/compose.mjs';
 
 const task = { id: 't', allowed_paths: ['src/title.mjs', 'src/lib'] };
 const ctx = { task, protected: ['acceptance', 'compose.yaml', 'harness.json'], editable: ['src'] };
@@ -107,4 +107,11 @@ test('compose policy rejects shared or host-reaching definitions', () => {
   for (const word of ['container_name', 'privileged', 'network_mode', 'published host port', 'Docker socket', 'outside the project', 'external', 'not defined', 'healthcheck']) {
     assert.ok(problems.some((p) => p.includes(word)), `expected a problem mentioning ${word}`);
   }
+});
+
+test('parallel gates do not count each other as foreign containers', () => {
+  assert.equal(isForeign('harness-20261118abc', 'harness-20261118xyz'), false);
+  assert.equal(isForeign('harness-20261118xyz', 'harness-20261118xyz'), false);
+  assert.equal(isForeign('chronograph', 'harness-20261118xyz'), true);
+  assert.equal(isForeign('', 'harness-20261118xyz'), true);
 });
